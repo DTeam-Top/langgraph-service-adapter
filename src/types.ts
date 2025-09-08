@@ -27,6 +27,30 @@ export interface LangGraphServiceAdapterConfig {
 
   /** Debug mode */
   debug?: boolean;
+
+  /**
+   * Specifies the strategy for handling the system prompt from the CopilotKit frontend.
+   *
+   * - **`passthrough` (default):** For agents without a built-in system prompt.
+   *   The frontend's system prompt is passed directly to the agent as a `SystemMessage`.
+   *
+   * - **`inject`:** For agents that have their own system prompt defined via a template.
+   *   The adapter intercepts the frontend's system prompt, removes it from the message list,
+   *   and injects its content into the agent's prompt template via the `configurable`
+   *   field under the key `copilotkit_instructions`.
+   *
+   * @example
+   * ```typescript
+   * // For an agent with its own prompt template
+   * const serviceAdapter = new LangGraphServiceAdapter({
+   *   agent: myTemplatedAgent,
+   *   systemPromptStrategy: 'inject',
+   * });
+   * ```
+   *
+   * @default 'passthrough'
+   */
+  systemPromptStrategy?: "passthrough" | "inject";
 }
 
 /**

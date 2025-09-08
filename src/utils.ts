@@ -1,5 +1,5 @@
 import { convertServiceAdapterError } from "@copilotkit/runtime";
-import { randomId } from "@copilotkit/shared";
+import { randomUUID } from "@copilotkit/shared";
 import type {
   AIMessageChunk,
   BaseMessage,
@@ -7,8 +7,8 @@ import type {
 } from "@langchain/core/messages";
 import type { DynamicStructuredTool } from "@langchain/core/tools";
 import type { StreamEvent } from "@langchain/core/tracers/log_stream";
+import { START } from "@langchain/langgraph";
 import { type RuntimeEventSubject, RuntimeEventTypes } from "./internal/events";
-
 import type { ActionInput } from "./internal/graphql/inputs/action.input";
 import type { Message } from "./internal/graphql/types/converted";
 import {
@@ -23,42 +23,70 @@ import type { LangGraphInput, MessageInProgress, StreamState } from "./types";
 export function convertCopilotKitToLangGraphInput({
   messages,
   actions,
+  debug = false,
 }: {
   messages: Message[];
   actions: ActionInput[];
-  threadId?: string;
-  runId?: string;
+  debug?: boolean;
 }): LangGraphInput {
+  if (debug) {
+    console.log(
+      "[DEBUG] Converting:",
+      messages.length,
+      "messages,",
+      actions.length,
+      "actions",
+    );
+  }
+
   try {
-    // Use CopilotKit existing message conversion
-    // LangGraph accepts LangChain messages directly, no additional conversion needed
-    const langChainMessages = messages
-      .map(convertMessageToLangChainMessage)
+    const convertedMessages = messages
+      .map((msg) => convertMessageToLangChainMessage(msg))
       .filter((msg): msg is BaseMessage => msg !== undefined);
 
-    // Use CopilotKit existing tool conversion
+    const langChainMessages = convertedMessages;
+
     const tools = actions
-      .map(convertActionInputToLangChainTool)
+      .map((action) => convertActionInputToLangChainTool(action))
       .filter((tool): tool is DynamicStructuredTool => tool !== undefined);
 
-    return {
+    if (debug && tools.length > 0) {
+      console.log(
+        `[DEBUG] Converted ${tools.length} CopilotKit tools to LangGraph`,
+      );
+    }
+
+    const result = {
       messages: langChainMessages,
       tools,
-      // Note: In direct LangGraph integration, threadId and runId are typically
-      // handled through the streamEvents config parameter, not the input
     };
+
+    if (debug) {
+      console.log("[DEBUG] LangGraphInput:", {
+        messagesCount: result.messages.length,
+        toolsCount: result.tools.length,
+      });
+    }
+
+    return result;
   } catch (error) {
+    if (debug) {
+      console.error(
+        "[DEBUG] Error in convertCopilotKitToLangGraphInput:",
+        error,
+      );
+    }
     // Use CopilotKit's standard error conversion for input conversion errors
     throw convertServiceAdapterError(error, "LangGraph");
   }
 }
 
 /**
- * Create initial stream state for managing message and tool call states
+ * Create initial stream state
  */
 export function createStreamState(): StreamState {
   return {
-    runId: randomId(),
+    runId: randomUUID(),
     messagesInProgress: new Map(),
     currentNodeName: undefined,
     hasError: false,
@@ -66,7 +94,7 @@ export function createStreamState(): StreamState {
 }
 
 /**
- * Main event handler - directly processes LangGraph StreamEvents
+ * Main event handler for LangGraph StreamEvents
  */
 export async function handleLangGraphEvent(
   event: StreamEvent,
@@ -76,10 +104,9 @@ export async function handleLangGraphEvent(
 ): Promise<void> {
   try {
     if (debug) {
-      console.log("[LangGraph] Processing event:", event.event, event);
+      console.log(`[LangGraph] Processing event: ${event.event}`);
     }
 
-    // Set the runId for state management
     if (!streamState.runId && event.run_id) {
       streamState.runId = event.run_id;
     }
@@ -90,7 +117,7 @@ export async function handleLangGraphEvent(
         await handleChatModelStream(event, eventStream$, streamState);
         break;
       case "on_chat_model_end":
-        await handleChatModelEnd(event, eventStream$, streamState, debug);
+        await handleChatModelEnd(eventStream$, streamState);
         break;
       case "on_custom_event":
         // In direct LangGraph integration, custom events are typically application-specific
@@ -100,13 +127,9 @@ export async function handleLangGraphEvent(
         }
         break;
       case "on_chain_start":
-        await handleChainStart(event, eventStream$, streamState);
-        break;
-      case "on_chain_end":
-        await handleChainEnd(event, eventStream$, streamState);
+        await handleChainStart(event, streamState);
         break;
       default:
-        // Ignore other event types
         if (debug) {
           console.log("[LangGraph] Ignoring event type:", event.event);
         }
@@ -127,7 +150,7 @@ export async function handleLangGraphEvent(
 }
 
 /**
- * Handle chat model stream events - core thinking chain visualization
+ * Handle chat model stream events
  */
 async function handleChatModelStream(
   event: StreamEvent,
@@ -135,10 +158,10 @@ async function handleChatModelStream(
   streamState: StreamState,
 ): Promise<void> {
   const chunk = event.data?.chunk as AIMessageChunk | undefined;
-  if (!chunk) return;
+  if (!chunk) {
+    return;
+  }
 
-  // Check event filtering metadata (optional - mainly for CopilotKit compatibility)
-  // In direct LangGraph integration, these metadata fields may not be present
   const shouldEmitMessages =
     event.metadata?.["copilotkit:emit-messages"] ?? true;
   const shouldEmitToolCalls =
@@ -150,15 +173,13 @@ async function handleChatModelStream(
   let currentStream = getMessageInProgress(streamState.runId, streamState);
   const hasCurrentStream = Boolean(currentStream?.id);
 
-  // Handle tool calls - both tool_calls and tool_call_chunks formats
   const toolCall = chunk.tool_calls?.[0];
-  const toolCallChunk = chunk.tool_call_chunks?.[0];
 
   if (toolCall && shouldEmitToolCalls) {
     if (!hasCurrentStream && toolCall.name) {
       // Tool call start
       eventStream$.sendActionExecutionStart({
-        actionExecutionId: toolCall.id || randomId(),
+        actionExecutionId: toolCall.id || randomUUID(),
         actionName: toolCall.name,
         parentMessageId: chunk.id,
       });
@@ -166,8 +187,8 @@ async function handleChatModelStream(
       setMessageInProgress(
         streamState.runId,
         {
-          id: chunk.id || randomId(),
-          toolCallId: toolCall.id || randomId(),
+          id: chunk.id || randomUUID(),
+          toolCallId: toolCall.id || randomUUID(),
           toolCallName: toolCall.name,
         },
         streamState,
@@ -185,47 +206,11 @@ async function handleChatModelStream(
     }
   }
 
-  // Note: In direct LangGraph integration, intermediate state prediction
-  // is handled naturally through the LangGraph event flow rather than
-  // artificial prediction events used in CopilotKit's LangGraphAgent
-
-  if (toolCallChunk && shouldEmitToolCalls) {
-    if (!hasCurrentStream && toolCallChunk.name) {
-      // Tool call chunk start
-      eventStream$.sendActionExecutionStart({
-        actionExecutionId: toolCallChunk.id || randomId(),
-        actionName: toolCallChunk.name,
-        parentMessageId: chunk.id,
-      });
-
-      setMessageInProgress(
-        streamState.runId,
-        {
-          id: chunk.id || randomId(),
-          toolCallId: toolCallChunk.id || randomId(),
-          toolCallName: toolCallChunk.name,
-        },
-        streamState,
-      );
-      return;
-    }
-
-    if (hasCurrentStream && currentStream?.toolCallId && toolCallChunk.args) {
-      // Tool call chunk args
-      eventStream$.sendActionExecutionArgs({
-        actionExecutionId: currentStream.toolCallId,
-        args: toolCallChunk.args,
-      });
-      return;
-    }
-  }
-
-  // Handle text content - thinking process visualization
   const messageContent = resolveMessageContent(chunk.content);
+
   if (messageContent && shouldEmitMessages) {
     if (!hasCurrentStream || currentStream?.toolCallId) {
-      // Start new text message
-      const messageId = chunk.id || randomId();
+      const messageId = chunk.id || randomUUID();
       eventStream$.sendTextMessageStart({
         messageId: messageId,
       });
@@ -242,8 +227,7 @@ async function handleChatModelStream(
       currentStream = getMessageInProgress(streamState.runId, streamState);
     }
 
-    // Send text content - this shows the thinking process
-    if (currentStream) {
+    if (currentStream?.id) {
       eventStream$.sendTextMessageContent({
         messageId: currentStream.id,
         content: messageContent,
@@ -256,119 +240,41 @@ async function handleChatModelStream(
  * Handle chat model end events
  */
 async function handleChatModelEnd(
-  event: StreamEvent,
   eventStream$: RuntimeEventSubject,
   streamState: StreamState,
-  debug = false,
 ): Promise<void> {
   const currentStream = getMessageInProgress(streamState.runId, streamState);
 
   if (currentStream?.toolCallId) {
-    // End tool call
     eventStream$.sendActionExecutionEnd({
       actionExecutionId: currentStream.toolCallId,
     });
-
-    if (debug) {
-      console.log("[LangGraph] Ended tool call:", {
-        toolCallId: currentStream.toolCallId,
-        toolCallName: currentStream.toolCallName,
-        eventOutput: event.data?.output,
-      });
-    }
   } else if (currentStream?.id) {
-    // End text message
     eventStream$.sendTextMessageEnd({
       messageId: currentStream.id,
     });
-
-    if (debug) {
-      console.log("[LangGraph] Ended text message:", {
-        messageId: currentStream.id,
-        eventOutput: event.data?.output,
-      });
-    }
-  } else {
-    // No current stream - this might indicate a logic issue or an edge case
-    // The event.data.output contains the final model output, but we don't have
-    // a corresponding stream to end. This could happen if:
-    // 1. The model produced output without streaming chunks
-    // 2. There was an error in our stream tracking
-    // 3. This is a valid edge case we should handle
-
-    if (debug) {
-      console.warn(
-        "[LangGraph] ChatModelEnd event without corresponding stream:",
-        {
-          runId: streamState.runId,
-          eventRunId: event.run_id,
-          eventData: event.data,
-        },
-      );
-    }
   }
 
-  // Clean up state
   streamState.messagesInProgress.delete(streamState.runId);
 }
 
 /**
- * Handle chain start events - node state visualization
+ * Handle chain start events
  */
 async function handleChainStart(
   event: StreamEvent,
-  eventStream$: RuntimeEventSubject,
   streamState: StreamState,
 ): Promise<void> {
-  // Show node execution state for visualization
   if (
     event.metadata?.langgraph_node &&
-    event.metadata.langgraph_node !== "__start__"
+    event.metadata.langgraph_node !== START
   ) {
     streamState.currentNodeName = event.metadata.langgraph_node;
-
-    eventStream$.sendAgentStateMessage({
-      threadId: streamState.runId,
-      agentName: "LangGraph",
-      nodeName: event.metadata.langgraph_node,
-      runId: event.run_id,
-      active: true,
-      role: "agent",
-      state: "starting",
-      running: true,
-    });
-  }
-}
-
-/**
- * Handle chain end events - node state visualization
- */
-async function handleChainEnd(
-  event: StreamEvent,
-  eventStream$: RuntimeEventSubject,
-  streamState: StreamState,
-): Promise<void> {
-  // Update node execution state
-  if (
-    event.metadata?.langgraph_node &&
-    event.metadata.langgraph_node !== "__end__"
-  ) {
-    eventStream$.sendAgentStateMessage({
-      threadId: streamState.runId,
-      agentName: "LangGraph",
-      nodeName: event.metadata.langgraph_node,
-      runId: event.run_id,
-      active: false,
-      role: "agent",
-      state: "completed",
-      running: false,
-    });
   }
 }
 
 /**
  * Resolve message content from LangGraph message
- * Ported from AG-UI utils.ts
  */
 export function resolveMessageContent(content?: MessageContent): string | null {
   if (!content) return null;

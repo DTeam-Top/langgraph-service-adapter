@@ -1,3 +1,9 @@
+/**
+ * This file is copied from CopilotKit source code.
+ * Original source: https://github.com/CopilotKit/CopilotKit
+ * License: MIT
+ */
+
 import { BaseMessageInput } from "../base";
 import type {
   ActionExecutionMessageInput,
@@ -105,7 +111,7 @@ export class ResultMessage extends Message implements ResultMessageInput {
         return { result: JSON.stringify(parsed) };
       }
       return { result };
-    } catch (e) {
+    } catch (_e) {
       return { result };
     }
   }

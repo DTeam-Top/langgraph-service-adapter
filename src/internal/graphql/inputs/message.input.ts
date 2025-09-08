@@ -1,3 +1,9 @@
+/**
+ * This file is copied from CopilotKit source code.
+ * Original source: https://github.com/CopilotKit/CopilotKit
+ * License: MIT
+ */
+
 import type { MessageRole } from "../types/enums";
 
 export interface BaseMessageInput {

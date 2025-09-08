@@ -1,3 +1,9 @@
+/**
+ * This file is copied from CopilotKit source code.
+ * Original source: https://github.com/CopilotKit/CopilotKit
+ * License: MIT
+ */
+
 import {
   type Action,
   CopilotKitError,
@@ -133,10 +139,6 @@ interface RuntimeEventWithState {
 type EventSourceCallback = (eventStream$: RuntimeEventSubject) => Promise<void>;
 
 export class RuntimeEventSubject extends ReplaySubject<RuntimeEvent> {
-  constructor() {
-    super();
-  }
-
   complete(): void {
     super.complete();
   }
@@ -390,7 +392,7 @@ export class RuntimeEventSource {
       ),
       concatMap((eventWithState) => {
         if (
-          eventWithState.event!.type === RuntimeEventTypes.ActionExecutionEnd &&
+          eventWithState.event?.type === RuntimeEventTypes.ActionExecutionEnd &&
           eventWithState.callActionServerSide &&
           eventWithState.actionExecutionId !== null
         ) {
@@ -404,7 +406,7 @@ export class RuntimeEventSource {
             eventWithState.actionExecutionId,
             actionInputsWithoutAgents,
             threadId,
-          ).catch((error) => {});
+          ).catch((_error) => {});
 
           telemetry.capture("oss.runtime.server_action_executed", {});
           return concat(of(eventWithState.event!), toolCallEventStream$).pipe(
@@ -422,7 +424,7 @@ export class RuntimeEventSource {
                   this.errorHandler(structuredError, {
                     ...this.errorContext,
                     action: {
-                      name: eventWithState.action!.name,
+                      name: eventWithState.action?.name,
                       executionId: eventWithState.actionExecutionId,
                     },
                   }),
@@ -438,7 +440,7 @@ export class RuntimeEventSource {
 
               toolCallEventStream$.sendActionExecutionResult({
                 actionExecutionId: eventWithState.actionExecutionId!,
-                actionName: eventWithState.action!.name,
+                actionName: eventWithState.action?.name,
                 error: {
                   code: structuredError.code,
                   message: structuredError.message,
@@ -480,7 +482,7 @@ async function executeAction(
   if (actionArguments) {
     try {
       args = JSON.parse(actionArguments);
-    } catch (e) {
+    } catch (_e) {
       console.error("Action argument unparsable", { actionArguments });
       eventStream$.sendActionExecutionResult({
         actionExecutionId,
@@ -507,7 +509,7 @@ async function executeAction(
     });
 
     const agentExecutionResult = plainToInstance(ResultMessage, {
-      id: "result-" + actionExecutionId,
+      id: `result-${actionExecutionId}`,
       createdAt: new Date(),
       actionExecutionId,
       actionName: action.name,

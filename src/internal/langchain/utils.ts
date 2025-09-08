@@ -1,3 +1,9 @@
+/**
+ * This file is copied from CopilotKit source code.
+ * Original source: https://github.com/CopilotKit/CopilotKit
+ * License: MIT
+ */
+
 import { convertJsonSchemaToZodSchema, randomId } from "@copilotkit/shared";
 import {
   AIMessage,
@@ -9,7 +15,6 @@ import {
   ToolMessage,
 } from "@langchain/core/messages";
 import { DynamicStructuredTool } from "@langchain/core/tools";
-import type { z } from "zod";
 import type { RuntimeEventSubject } from "../events";
 import type { ActionInput } from "../graphql/inputs/action.input";
 import type { Message } from "../graphql/types/converted";
@@ -187,7 +192,7 @@ export async function streamLangChainResponse({
         let toolCallArgs: string | undefined;
         let hasToolCall: boolean = false;
         let content = "";
-        if (value && value.content) {
+        if (value?.content) {
           content = Array.isArray(value.content)
             ? (((value.content[0] as any)?.text ?? "") as string)
             : value.content;
@@ -196,7 +201,7 @@ export async function streamLangChainResponse({
         if (isAIMessageChunk(value)) {
           const chunk = value.tool_call_chunks?.[0];
           toolCallArgs = chunk?.args;
-          hasToolCall = chunk != undefined;
+          hasToolCall = chunk !== undefined;
           if (chunk?.name) toolCallDetails.name = chunk.name;
           // track different index on the same tool cool
           if (chunk?.index != null) {
@@ -217,7 +222,7 @@ export async function streamLangChainResponse({
           toolCallName = chunk?.function?.name;
           toolCallId = chunk?.id;
           toolCallArgs = chunk?.function?.arguments;
-          hasToolCall = chunk?.function != undefined;
+          hasToolCall = chunk?.function !== undefined;
         }
 
         // When switching from message to function or vice versa,

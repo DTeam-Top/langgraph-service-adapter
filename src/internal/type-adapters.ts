@@ -1,3 +1,9 @@
+/**
+ * This file is copied from CopilotKit source code.
+ * Original source: https://github.com/CopilotKit/CopilotKit
+ * License: MIT
+ */
+
 // Type adapters to convert between @copilotkit/runtime types and internal types
 
 // Note: ActionInput and Message are not exported from @copilotkit/runtime
