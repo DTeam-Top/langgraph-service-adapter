@@ -1,5 +1,5 @@
 {
-  "name": "langgraph-service-adapter",
+  "name": "@dteam/langgraph-service-adapter",
   "version": "0.1.0",
   "description": "A standalone service adapter for integrating LangGraph with CopilotKit runtime",
   "main": "./dist/index.js",

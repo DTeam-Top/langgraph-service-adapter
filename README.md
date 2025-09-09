@@ -14,11 +14,11 @@ A standalone service adapter for integrating LangGraph agents with CopilotKit ru
 ## Installation
 
 ```bash
-npm install https://github.com/abcfy2/langgraph-service-adapter.git
+npm install https://github.com/DTeam-Top/langgraph-service-adapter.git
 # or
-pnpm add https://github.com/abcfy2/langgraph-service-adapter.git
+pnpm add https://github.com/DTeam-Top/langgraph-service-adapter.git
 # or
-yarn add https://github.com/abcfy2/langgraph-service-adapter.git
+yarn add https://github.com/DTeam-Top/langgraph-service-adapter.git
 ```
 
 ### Peer Dependencies
