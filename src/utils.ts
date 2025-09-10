@@ -119,6 +119,63 @@ export async function handleLangGraphEvent(
       case "on_chat_model_end":
         await handleChatModelEnd(eventStream$, streamState);
         break;
+      case "on_tool_start": {
+        // Map tool start to CopilotKit ActionExecutionStart + Args
+        const actionExecutionId = event.run_id || randomUUID();
+        const actionName =
+          (event.name as string) || streamState.currentNodeName || "tool";
+
+        // Extract arguments string from common shapes
+        let argsStr = "";
+        const inputAny = (event as any).data?.input;
+        try {
+          if (typeof inputAny === "string") {
+            argsStr = inputAny;
+          } else if (inputAny && typeof inputAny === "object") {
+            if (
+              Object.hasOwn(inputAny, "input") &&
+              typeof (inputAny as any).input === "string"
+            ) {
+              argsStr = (inputAny as any).input as string;
+            } else {
+              argsStr = JSON.stringify(inputAny);
+            }
+          }
+        } catch {
+          argsStr = "";
+        }
+
+        eventStream$.sendActionExecutionStart({
+          actionExecutionId,
+          actionName,
+        });
+        if (argsStr) {
+          eventStream$.sendActionExecutionArgs({
+            actionExecutionId,
+            args: argsStr,
+          });
+        }
+
+        // Track in-progress tool call by current run
+        setMessageInProgress(
+          streamState.runId,
+          {
+            id: actionExecutionId,
+            toolCallId: actionExecutionId,
+            toolCallName: actionName,
+          },
+          streamState,
+        );
+        break;
+      }
+      case "on_tool_end": {
+        const current = getMessageInProgress(streamState.runId, streamState);
+        const actionExecutionId =
+          current?.toolCallId || event.run_id || randomUUID();
+        eventStream$.sendActionExecutionEnd({ actionExecutionId });
+        streamState.messagesInProgress.delete(streamState.runId);
+        break;
+      }
       case "on_custom_event":
         // In direct LangGraph integration, custom events are typically application-specific
         // and don't map directly to CopilotKit runtime events, so we ignore them
