@@ -4,6 +4,7 @@ import type {
   AIMessageChunk,
   BaseMessage,
   MessageContent,
+  ToolMessage,
 } from "@langchain/core/messages";
 import type { DynamicStructuredTool } from "@langchain/core/tools";
 import type { StreamEvent } from "@langchain/core/tracers/log_stream";
@@ -105,6 +106,8 @@ export async function handleLangGraphEvent(
   try {
     if (debug) {
       console.log(`[LangGraph] Processing event: ${event.event}`);
+      console.log(`[LangGraph] Event Object:`, event);
+      console.log(`[LangGraph] Current StreamState:`, streamState);
     }
 
     if (!streamState.runId && event.run_id) {
@@ -119,61 +122,12 @@ export async function handleLangGraphEvent(
       case "on_chat_model_end":
         await handleChatModelEnd(eventStream$, streamState);
         break;
-      case "on_tool_start": {
-        // Map tool start to CopilotKit ActionExecutionStart + Args
-        const actionExecutionId = event.run_id || randomUUID();
-        const actionName =
-          (event.name as string) || streamState.currentNodeName || "tool";
-
-        // Extract arguments string from common shapes
-        let argsStr = "";
-        const inputAny = (event as any).data?.input;
-        try {
-          if (typeof inputAny === "string") {
-            argsStr = inputAny;
-          } else if (inputAny && typeof inputAny === "object") {
-            if (
-              Object.hasOwn(inputAny, "input") &&
-              typeof (inputAny as any).input === "string"
-            ) {
-              argsStr = (inputAny as any).input as string;
-            } else {
-              argsStr = JSON.stringify(inputAny);
-            }
-          }
-        } catch {
-          argsStr = "";
-        }
-
-        eventStream$.sendActionExecutionStart({
-          actionExecutionId,
-          actionName,
-        });
-        if (argsStr) {
-          eventStream$.sendActionExecutionArgs({
-            actionExecutionId,
-            args: argsStr,
-          });
-        }
-
-        // Track in-progress tool call by current run
-        setMessageInProgress(
-          streamState.runId,
-          {
-            id: actionExecutionId,
-            toolCallId: actionExecutionId,
-            toolCallName: actionName,
-          },
-          streamState,
-        );
-        break;
-      }
+      // case "on_tool_start": {
+      //   await handleToolStart(event, eventStream$, streamState);
+      //   break;
+      // }
       case "on_tool_end": {
-        const current = getMessageInProgress(streamState.runId, streamState);
-        const actionExecutionId =
-          current?.toolCallId || event.run_id || randomUUID();
-        eventStream$.sendActionExecutionEnd({ actionExecutionId });
-        streamState.messagesInProgress.delete(streamState.runId);
+        await handleToolEnd(event, eventStream$, streamState);
         break;
       }
       case "on_custom_event":
@@ -214,54 +168,16 @@ async function handleChatModelStream(
   eventStream$: RuntimeEventSubject,
   streamState: StreamState,
 ): Promise<void> {
-  const chunk = event.data?.chunk as AIMessageChunk | undefined;
-  if (!chunk) {
-    return;
-  }
+  const chunk = event.data?.chunk as AIMessageChunk;
 
   const shouldEmitMessages =
     event.metadata?.["copilotkit:emit-messages"] ?? true;
-  const shouldEmitToolCalls =
-    event.metadata?.["copilotkit:emit-tool-calls"] ?? true;
 
   // Skip if finished
   if (chunk.response_metadata?.finish_reason) return;
 
   let currentStream = getMessageInProgress(streamState.runId, streamState);
   const hasCurrentStream = Boolean(currentStream?.id);
-
-  const toolCall = chunk.tool_calls?.[0];
-
-  if (toolCall && shouldEmitToolCalls) {
-    if (!hasCurrentStream && toolCall.name) {
-      // Tool call start
-      eventStream$.sendActionExecutionStart({
-        actionExecutionId: toolCall.id || randomUUID(),
-        actionName: toolCall.name,
-        parentMessageId: chunk.id,
-      });
-
-      setMessageInProgress(
-        streamState.runId,
-        {
-          id: chunk.id || randomUUID(),
-          toolCallId: toolCall.id || randomUUID(),
-          toolCallName: toolCall.name,
-        },
-        streamState,
-      );
-      return;
-    }
-
-    if (hasCurrentStream && currentStream?.toolCallId && toolCall.args) {
-      // Tool call args
-      eventStream$.sendActionExecutionArgs({
-        actionExecutionId: currentStream.toolCallId,
-        args: JSON.stringify(toolCall.args),
-      });
-      return;
-    }
-  }
 
   const messageContent = resolveMessageContent(chunk.content);
 
@@ -301,12 +217,7 @@ async function handleChatModelEnd(
   streamState: StreamState,
 ): Promise<void> {
   const currentStream = getMessageInProgress(streamState.runId, streamState);
-
-  if (currentStream?.toolCallId) {
-    eventStream$.sendActionExecutionEnd({
-      actionExecutionId: currentStream.toolCallId,
-    });
-  } else if (currentStream?.id) {
+  if (currentStream?.id) {
     eventStream$.sendTextMessageEnd({
       messageId: currentStream.id,
     });
@@ -328,6 +239,88 @@ async function handleChainStart(
   ) {
     streamState.currentNodeName = event.metadata.langgraph_node;
   }
+}
+
+async function handleToolStart(
+  event: StreamEvent,
+  eventStream$: RuntimeEventSubject,
+  streamState: StreamState,
+) {
+  // Map tool start to CopilotKit ActionExecutionStart + Args
+  const actionExecutionId = event.run_id || randomUUID();
+  const actionName = event.name || streamState.currentNodeName || "tool";
+
+  // Extract arguments string from common shapes
+  let argsStr = "";
+  const inputAny = event.data?.input;
+  try {
+    if (typeof inputAny === "string") {
+      argsStr = inputAny;
+    } else if (inputAny && typeof inputAny === "object") {
+      if ("input" in inputAny && typeof inputAny.input === "string") {
+        argsStr = inputAny.input as string;
+      } else {
+        argsStr = JSON.stringify(inputAny);
+      }
+    }
+  } catch {
+    argsStr = "";
+  }
+
+  eventStream$.sendActionExecutionStart({
+    actionExecutionId,
+    actionName,
+  });
+  if (argsStr) {
+    eventStream$.sendActionExecutionArgs({
+      actionExecutionId,
+      args: argsStr,
+    });
+  }
+
+  // Track in-progress tool call by current run
+  setMessageInProgress(
+    streamState.runId,
+    {
+      id: actionExecutionId,
+      toolCallId: actionExecutionId,
+      toolCallName: actionName,
+    },
+    streamState,
+  );
+}
+
+async function handleToolEnd(
+  event: StreamEvent,
+  eventStream$: RuntimeEventSubject,
+  streamState: StreamState,
+) {
+  // Map tool start to CopilotKit ActionExecutionStart + Args
+  const toolMessage = event.data?.output as ToolMessage;
+  const actionExecutionId = toolMessage.tool_call_id || randomUUID();
+  const actionName = toolMessage.name || streamState.currentNodeName || "tool";
+
+  // Extract arguments string from common shapes
+  let argsStr = "";
+  const inputAny = event.data?.input;
+  try {
+    if (typeof inputAny === "string") {
+      argsStr = inputAny;
+    } else if (inputAny && typeof inputAny === "object") {
+      if ("input" in inputAny && typeof inputAny.input === "string") {
+        argsStr = inputAny.input as string;
+      } else {
+        argsStr = JSON.stringify(inputAny);
+      }
+    }
+  } catch {
+    argsStr = "";
+  }
+  eventStream$.sendActionExecution({
+    actionExecutionId,
+    actionName,
+    args: argsStr,
+  });
 }
 
 /**

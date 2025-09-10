@@ -5,38 +5,19 @@
  */
 
 import {
-  type Action,
   CopilotKitError,
   CopilotKitErrorCode,
   CopilotKitLowLevelError,
-  ensureStructuredError,
   randomId,
   Severity,
 } from "@copilotkit/shared";
-import { plainToInstance } from "class-transformer";
+import { ReplaySubject } from "rxjs";
 import {
-  catchError,
-  concat,
-  concatMap,
-  EMPTY,
-  firstValueFrom,
-  from,
-  of,
-  ReplaySubject,
-  type Subject,
-  scan,
-} from "rxjs";
-import type { ActionInput } from "./graphql/inputs/action.input";
-import {
-  ActionExecutionMessage,
+  type ActionExecutionMessage,
   ResultMessage,
   type TextMessage,
 } from "./graphql/types/converted";
-import type { GuardrailsResult } from "./graphql/types/guardrails-result.type";
-import { streamLangChainResponse } from "./langchain/utils";
-import { isRemoteAgentAction } from "./lib/runtime/remote-actions";
 import { generateHelpfulErrorMessage } from "./lib/streaming";
-import telemetry from "./lib/telemetry-client";
 
 export enum RuntimeEventTypes {
   TextMessageStart = "TextMessageStart",
@@ -127,22 +108,9 @@ export type RuntimeEvent =
   | RunTimeMetaEvent
   | RuntimeErrorEvent;
 
-interface RuntimeEventWithState {
-  event: RuntimeEvent | null;
-  callActionServerSide: boolean;
-  action: Action<any> | null;
-  actionExecutionId: string | null;
-  args: string;
-  actionExecutionParentMessageId: string | null;
-}
-
 type EventSourceCallback = (eventStream$: RuntimeEventSubject) => Promise<void>;
 
 export class RuntimeEventSubject extends ReplaySubject<RuntimeEvent> {
-  complete(): void {
-    super.complete();
-  }
-
   sendTextMessageStart({
     messageId,
     parentMessageId,
@@ -317,262 +285,6 @@ export class RuntimeEventSource {
       });
     } else {
       this.eventStream$.sendTextMessage(randomId(), errorMessage);
-    }
-  }
-
-  processRuntimeEvents({
-    serverSideActions,
-    guardrailsResult$,
-    actionInputsWithoutAgents,
-    threadId,
-  }: {
-    serverSideActions: Action<any>[];
-    guardrailsResult$?: Subject<GuardrailsResult>;
-    actionInputsWithoutAgents: ActionInput[];
-    threadId: string;
-  }) {
-    this.callback(this.eventStream$).catch(async (error) => {
-      // Convert streaming errors to structured errors, but preserve already structured ones
-      const structuredError = ensureStructuredError(
-        error,
-        convertStreamingErrorToStructured,
-      );
-
-      // Call the runtime error handler if provided
-      if (this.errorHandler && this.errorContext) {
-        try {
-          await this.errorHandler(structuredError, this.errorContext);
-        } catch (errorHandlerError) {
-          console.error("Error in streaming error handler:", errorHandlerError);
-        }
-      }
-
-      this.eventStream$.error(structuredError);
-      this.eventStream$.complete();
-    });
-    return this.eventStream$.pipe(
-      // track state
-      scan(
-        (acc, event) => {
-          // It seems like this is needed so that rxjs recognizes the object has changed
-          // This fixes an issue where action were executed multiple times
-          // Not investigating further for now (Markus)
-          acc = { ...acc };
-
-          if (event.type === RuntimeEventTypes.ActionExecutionStart) {
-            acc.callActionServerSide =
-              serverSideActions.find(
-                (action) => action.name === event.actionName,
-              ) !== undefined;
-            acc.args = "";
-            acc.actionExecutionId = event.actionExecutionId;
-            if (acc.callActionServerSide) {
-              acc.action =
-                serverSideActions.find(
-                  (action) => action.name === event.actionName,
-                ) || null;
-            }
-            acc.actionExecutionParentMessageId = event.parentMessageId || null;
-          } else if (event.type === RuntimeEventTypes.ActionExecutionArgs) {
-            acc.args += event.args;
-          }
-
-          acc.event = event;
-
-          return acc;
-        },
-        {
-          event: null,
-          callActionServerSide: false,
-          args: "",
-          actionExecutionId: null,
-          action: null,
-          actionExecutionParentMessageId: null,
-        } as RuntimeEventWithState,
-      ),
-      concatMap((eventWithState) => {
-        if (
-          eventWithState.event?.type === RuntimeEventTypes.ActionExecutionEnd &&
-          eventWithState.callActionServerSide &&
-          eventWithState.actionExecutionId !== null
-        ) {
-          const toolCallEventStream$ = new RuntimeEventSubject();
-          executeAction(
-            toolCallEventStream$,
-            guardrailsResult$ ? guardrailsResult$ : null,
-            eventWithState.action!,
-            eventWithState.args,
-            eventWithState.actionExecutionParentMessageId,
-            eventWithState.actionExecutionId,
-            actionInputsWithoutAgents,
-            threadId,
-          ).catch((_error) => {});
-
-          telemetry.capture("oss.runtime.server_action_executed", {});
-          return concat(of(eventWithState.event!), toolCallEventStream$).pipe(
-            catchError((error) => {
-              // Convert streaming errors to structured errors and send as action result, but preserve already structured ones
-              const structuredError = ensureStructuredError(
-                error,
-                convertStreamingErrorToStructured,
-              );
-
-              // Call the runtime error handler if provided
-              if (this.errorHandler && this.errorContext) {
-                // Use from() to handle async error handler
-                from(
-                  this.errorHandler(structuredError, {
-                    ...this.errorContext,
-                    action: {
-                      name: eventWithState.action?.name,
-                      executionId: eventWithState.actionExecutionId,
-                    },
-                  }),
-                ).subscribe({
-                  error: (errorHandlerError) => {
-                    console.error(
-                      "Error in action execution error handler:",
-                      errorHandlerError,
-                    );
-                  },
-                });
-              }
-
-              toolCallEventStream$.sendActionExecutionResult({
-                actionExecutionId: eventWithState.actionExecutionId!,
-                actionName: eventWithState.action?.name,
-                error: {
-                  code: structuredError.code,
-                  message: structuredError.message,
-                },
-              });
-
-              return EMPTY;
-            }),
-          );
-        } else {
-          return of(eventWithState.event!);
-        }
-      }),
-    );
-  }
-}
-
-async function executeAction(
-  eventStream$: RuntimeEventSubject,
-  guardrailsResult$: Subject<GuardrailsResult> | null,
-  action: Action<any>,
-  actionArguments: string,
-  actionExecutionParentMessageId: string | null,
-  actionExecutionId: string,
-  actionInputsWithoutAgents: ActionInput[],
-  threadId: string,
-) {
-  if (guardrailsResult$) {
-    const { status } = await firstValueFrom(guardrailsResult$);
-
-    if (status === "denied") {
-      eventStream$.complete();
-      return;
-    }
-  }
-
-  // Prepare arguments for function calling
-  let args: Record<string, any>[] = [];
-  if (actionArguments) {
-    try {
-      args = JSON.parse(actionArguments);
-    } catch (_e) {
-      console.error("Action argument unparsable", { actionArguments });
-      eventStream$.sendActionExecutionResult({
-        actionExecutionId,
-        actionName: action.name,
-        error: {
-          code: "INVALID_ARGUMENTS",
-          message: "Failed to parse action arguments",
-        },
-      });
-      return;
-    }
-  }
-
-  // handle LangGraph agents
-  if (isRemoteAgentAction(action)) {
-    const result = `${action.name} agent started`;
-
-    const agentExecution = plainToInstance(ActionExecutionMessage, {
-      id: actionExecutionId,
-      createdAt: new Date(),
-      name: action.name,
-      arguments: JSON.parse(actionArguments),
-      parentMessageId: actionExecutionParentMessageId ?? actionExecutionId,
-    });
-
-    const agentExecutionResult = plainToInstance(ResultMessage, {
-      id: `result-${actionExecutionId}`,
-      createdAt: new Date(),
-      actionExecutionId,
-      actionName: action.name,
-      result,
-    });
-
-    eventStream$.sendActionExecutionResult({
-      actionExecutionId,
-      actionName: action.name,
-      result,
-    });
-
-    const stream = await (action as any).remoteAgentHandler({
-      name: action.name,
-      threadId,
-      actionInputsWithoutAgents,
-      additionalMessages: [agentExecution, agentExecutionResult],
-    });
-
-    // forward to eventStream$
-    from(stream).subscribe({
-      next: (event: any) => eventStream$.next(event),
-      error: (err) => {
-        // Preserve already structured CopilotKit errors, only convert unstructured errors
-        const structuredError = ensureStructuredError(
-          err,
-          convertStreamingErrorToStructured,
-        );
-        eventStream$.sendActionExecutionResult({
-          actionExecutionId,
-          actionName: action.name,
-          error: {
-            code: structuredError.code,
-            message: structuredError.message,
-          },
-        });
-        eventStream$.complete();
-      },
-      complete: () => eventStream$.complete(),
-    });
-  } else {
-    // call the function
-    try {
-      const result = await action.handler?.(args);
-      await streamLangChainResponse({
-        result,
-        eventStream$,
-        actionExecution: {
-          name: action.name,
-          id: actionExecutionId,
-        },
-      });
-    } catch (e) {
-      console.error("Error in action handler", e);
-      eventStream$.sendActionExecutionResult({
-        actionExecutionId,
-        actionName: action.name,
-        error: {
-          code: "HANDLER_ERROR",
-          message: e instanceof Error ? e.message : String(e),
-        },
-      });
-      eventStream$.complete();
     }
   }
 }

@@ -2,7 +2,7 @@
  * @jest-environment node
  */
 
-import { AIMessage, AIMessageChunk } from "@langchain/core/messages";
+import { AIMessage, AIMessageChunk, ToolMessage } from "@langchain/core/messages";
 import { FakeStreamingChatModel } from "@langchain/core/utils/testing";
 import {
   END,
@@ -916,7 +916,7 @@ describe("LangGraphServiceAdapter", () => {
       expect(result.threadId).toBe("test-thread-complex");
     });
 
-    it("should emit ActionExecution events for on_tool_start/on_tool_end", async () => {
+    it("should emit ActionExecution events for on_tool_end", async () => {
       const eventStream$ = new RuntimeEventSubject();
       const streamState = createStreamState();
 
@@ -924,13 +924,20 @@ describe("LangGraphServiceAdapter", () => {
       eventStream$.subscribe({ next: (e: any) => captured.push(e) });
 
       // Simulate LangGraph tool start event (with nested input.input string as seen in real logs)
-      const startEvent: any = {
-        event: "on_tool_start",
+      const endEvent = {
+        event: "on_tool_end",
         run_id: "tool-run-1",
         name: "search",
         metadata: {},
         tags: [],
         data: {
+          output: new ToolMessage({
+            name: "search",
+            content: "",
+            additional_kwargs: {},
+            response_metadata: {},
+            tool_call_id: "tool-call-1",
+          }),
           input: {
             input:
               '{"name":"NewYork","country":"USA","image":"https://example.com/xian.jpg","activities":"Play&Explore","description":"I love New York"}',
@@ -938,24 +945,7 @@ describe("LangGraphServiceAdapter", () => {
         },
       };
 
-      await handleLangGraphEvent(startEvent, eventStream$, streamState, false);
-
-      const endEvent: any = {
-        event: "on_tool_end",
-        run_id: "tool-run-1",
-        name: "search",
-        metadata: {},
-        tags: [],
-        data: { output: "" },
-      };
-
       await handleLangGraphEvent(endEvent, eventStream$, streamState, false);
-
-      // Assertions: start -> args -> end
-      const start = captured.find(
-        (e) => e.type === "ActionExecutionStart" && e.actionName === "search",
-      );
-      expect(start).toBeTruthy();
       const args = captured.find(
         (e) =>
           e.type === "ActionExecutionArgs" &&
@@ -967,7 +957,7 @@ describe("LangGraphServiceAdapter", () => {
       const end = captured.find(
         (e) =>
           e.type === "ActionExecutionEnd" &&
-          e.actionExecutionId === start.actionExecutionId,
+          e.actionExecutionId === args.actionExecutionId,
       );
       expect(end).toBeTruthy();
     });
