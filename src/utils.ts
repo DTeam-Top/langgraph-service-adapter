@@ -91,6 +91,9 @@ export function createStreamState(): StreamState {
     messagesInProgress: new Map(),
     currentNodeName: undefined,
     hasError: false,
+    // Track tool usage within the current run to control message emission
+    hasToolActivity: false,
+    lastActionExecutionId: undefined,
   };
 }
 
@@ -122,10 +125,6 @@ export async function handleLangGraphEvent(
       case "on_chat_model_end":
         await handleChatModelEnd(eventStream$, streamState);
         break;
-      // case "on_tool_start": {
-      //   await handleToolStart(event, eventStream$, streamState);
-      //   break;
-      // }
       case "on_tool_end": {
         await handleToolEnd(event, eventStream$, streamState);
         break;
@@ -175,6 +174,21 @@ async function handleChatModelStream(
 
   // Skip if finished
   if (chunk.response_metadata?.finish_reason) return;
+
+  // Suppress assistant text once a tool call is present or has occurred in this run
+  // This keeps the response tail on action messages so the frontend executes handlers.
+  const toolCallChunks = chunk?.tool_call_chunks;
+  const hasToolCallInChunk = toolCallChunks && toolCallChunks.length > 0;
+
+  if (hasToolCallInChunk || streamState.hasToolActivity) {
+    const inProgress = getMessageInProgress(streamState.runId, streamState);
+    if (inProgress?.id && !inProgress.toolCallId) {
+      // End any in-progress text to prevent trailing text
+      eventStream$.sendTextMessageEnd({ messageId: inProgress.id });
+      streamState.messagesInProgress.delete(streamState.runId);
+    }
+    return;
+  }
 
   let currentStream = getMessageInProgress(streamState.runId, streamState);
   const hasCurrentStream = Boolean(currentStream?.id);
@@ -241,55 +255,6 @@ async function handleChainStart(
   }
 }
 
-async function handleToolStart(
-  event: StreamEvent,
-  eventStream$: RuntimeEventSubject,
-  streamState: StreamState,
-) {
-  // Map tool start to CopilotKit ActionExecutionStart + Args
-  const actionExecutionId = event.run_id || randomUUID();
-  const actionName = event.name || streamState.currentNodeName || "tool";
-
-  // Extract arguments string from common shapes
-  let argsStr = "";
-  const inputAny = event.data?.input;
-  try {
-    if (typeof inputAny === "string") {
-      argsStr = inputAny;
-    } else if (inputAny && typeof inputAny === "object") {
-      if ("input" in inputAny && typeof inputAny.input === "string") {
-        argsStr = inputAny.input as string;
-      } else {
-        argsStr = JSON.stringify(inputAny);
-      }
-    }
-  } catch {
-    argsStr = "";
-  }
-
-  eventStream$.sendActionExecutionStart({
-    actionExecutionId,
-    actionName,
-  });
-  if (argsStr) {
-    eventStream$.sendActionExecutionArgs({
-      actionExecutionId,
-      args: argsStr,
-    });
-  }
-
-  // Track in-progress tool call by current run
-  setMessageInProgress(
-    streamState.runId,
-    {
-      id: actionExecutionId,
-      toolCallId: actionExecutionId,
-      toolCallName: actionName,
-    },
-    streamState,
-  );
-}
-
 async function handleToolEnd(
   event: StreamEvent,
   eventStream$: RuntimeEventSubject,
@@ -316,11 +281,21 @@ async function handleToolEnd(
   } catch {
     argsStr = "";
   }
+  // If a text message is currently in progress, end it before emitting action events
+  const inProgress = getMessageInProgress(streamState.runId, streamState);
+  if (inProgress?.id && !inProgress.toolCallId) {
+    eventStream$.sendTextMessageEnd({ messageId: inProgress.id });
+    streamState.messagesInProgress.delete(streamState.runId);
+  }
   eventStream$.sendActionExecution({
     actionExecutionId,
     actionName,
     args: argsStr,
   });
+
+  // Mark tool activity so subsequent assistant text in this run is suppressed
+  streamState.hasToolActivity = true;
+  streamState.lastActionExecutionId = actionExecutionId;
 }
 
 /**

@@ -78,6 +78,10 @@ export interface StreamState {
   currentNodeName?: string;
   /** Whether an error has occurred during processing */
   hasError: boolean;
+  /** Whether any tool activity has occurred in this run */
+  hasToolActivity: boolean;
+  /** Last action execution id observed in this run */
+  lastActionExecutionId?: string;
 }
 
 /**

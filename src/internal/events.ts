@@ -4,20 +4,13 @@
  * License: MIT
  */
 
-import {
-  CopilotKitError,
-  CopilotKitErrorCode,
-  CopilotKitLowLevelError,
-  randomId,
-  Severity,
-} from "@copilotkit/shared";
+import { randomId } from "@copilotkit/shared";
 import { ReplaySubject } from "rxjs";
 import {
   type ActionExecutionMessage,
   ResultMessage,
   type TextMessage,
 } from "./graphql/types/converted";
-import { generateHelpfulErrorMessage } from "./lib/streaming";
 
 export enum RuntimeEventTypes {
   TextMessageStart = "TextMessageStart",
@@ -287,37 +280,4 @@ export class RuntimeEventSource {
       this.eventStream$.sendTextMessage(randomId(), errorMessage);
     }
   }
-}
-
-function convertStreamingErrorToStructured(error: any): CopilotKitError {
-  // Determine a more helpful error message based on context
-  const helpfulMessage = generateHelpfulErrorMessage(
-    error,
-    "event streaming connection",
-  );
-
-  // For network-related errors, use CopilotKitLowLevelError to preserve the original error
-  if (
-    error?.message?.includes("fetch failed") ||
-    error?.message?.includes("ECONNREFUSED") ||
-    error?.message?.includes("ENOTFOUND") ||
-    error?.message?.includes("ETIMEDOUT") ||
-    error?.message?.includes("terminated") ||
-    error?.cause?.code === "UND_ERR_SOCKET" ||
-    error?.message?.includes("other side closed") ||
-    error?.code === "UND_ERR_SOCKET"
-  ) {
-    return new CopilotKitLowLevelError({
-      error: error instanceof Error ? error : new Error(String(error)),
-      url: "event streaming connection",
-      message: helpfulMessage,
-    });
-  }
-
-  // For all other errors, preserve the raw error in a basic CopilotKitError
-  return new CopilotKitError({
-    message: helpfulMessage,
-    code: CopilotKitErrorCode.UNKNOWN,
-    severity: Severity.CRITICAL,
-  });
 }
