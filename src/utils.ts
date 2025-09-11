@@ -125,6 +125,9 @@ export async function handleLangGraphEvent(
       case "on_chat_model_end":
         await handleChatModelEnd(eventStream$, streamState);
         break;
+      case "on_tool_start":
+        await handleToolStart(event, eventStream$, streamState);
+        break;
       case "on_tool_end": {
         await handleToolEnd(event, eventStream$, streamState);
         break;
@@ -255,17 +258,19 @@ async function handleChainStart(
   }
 }
 
-async function handleToolEnd(
+/**
+ * Handle tool start events - when a tool begins execution
+ */
+async function handleToolStart(
   event: StreamEvent,
   eventStream$: RuntimeEventSubject,
   streamState: StreamState,
-) {
-  // Map tool start to CopilotKit ActionExecutionStart + Args
-  const toolMessage = event.data?.output as ToolMessage;
-  const actionExecutionId = toolMessage.tool_call_id || randomUUID();
-  const actionName = toolMessage.name || streamState.currentNodeName || "tool";
+): Promise<void> {
+  // Extract tool information from the start event
+  const toolName = event.name || streamState.currentNodeName || "tool";
+  const actionExecutionId = event.run_id || randomUUID();
 
-  // Extract arguments string from common shapes
+  // Extract arguments from the input
   let argsStr = "";
   const inputAny = event.data?.input;
   try {
@@ -281,21 +286,57 @@ async function handleToolEnd(
   } catch {
     argsStr = "";
   }
-  // If a text message is currently in progress, end it before emitting action events
+
+  // CRITICAL: If a text message is currently in progress, end it before starting tool execution
+  // This prevents text streaming from interfering with tool execution UI
   const inProgress = getMessageInProgress(streamState.runId, streamState);
   if (inProgress?.id && !inProgress.toolCallId) {
     eventStream$.sendTextMessageEnd({ messageId: inProgress.id });
     streamState.messagesInProgress.delete(streamState.runId);
   }
-  eventStream$.sendActionExecution({
+
+  // Send action execution start event
+  eventStream$.sendActionExecutionStart({
     actionExecutionId,
-    actionName,
+    actionName: toolName,
+  });
+
+  // Send action arguments - this will trigger the frontend to transition from 'inProgress' to 'executing'
+  eventStream$.sendActionExecutionArgs({
+    actionExecutionId,
     args: argsStr,
   });
 
-  // Mark tool activity so subsequent assistant text in this run is suppressed
+  // Mark tool activity and store execution ID for the end event
   streamState.hasToolActivity = true;
   streamState.lastActionExecutionId = actionExecutionId;
+}
+
+/**
+ * Handle tool end events - when a tool completes execution
+ */
+async function handleToolEnd(
+  event: StreamEvent,
+  eventStream$: RuntimeEventSubject,
+  streamState: StreamState,
+): Promise<void> {
+  // Use the stored execution ID from tool start, or fall back to generating one
+  const actionExecutionId =
+    streamState.lastActionExecutionId || event.run_id || randomUUID();
+
+  // Extract result from tool output
+  const toolMessage = event.data?.output as ToolMessage;
+  const result = toolMessage?.content || "";
+
+  // Send action execution end event
+  eventStream$.sendActionExecutionEnd({ actionExecutionId });
+
+  // Send action execution result
+  eventStream$.sendActionExecutionResult({
+    actionExecutionId,
+    actionName: streamState.currentNodeName || "tool",
+    result: typeof result === "string" ? result : JSON.stringify(result),
+  });
 }
 
 /**

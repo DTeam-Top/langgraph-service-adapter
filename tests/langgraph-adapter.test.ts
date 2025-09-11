@@ -920,14 +920,31 @@ describe("LangGraphServiceAdapter", () => {
       expect(result.threadId).toBe("test-thread-complex");
     });
 
-    it("should emit ActionExecution events for on_tool_end", async () => {
+    it("should emit ActionExecution events for tool lifecycle", async () => {
       const eventStream$ = new RuntimeEventSubject();
       const streamState = createStreamState();
 
       const captured: any[] = [];
       eventStream$.subscribe({ next: (e: any) => captured.push(e) });
 
-      // Simulate LangGraph tool start event (with nested input.input string as seen in real logs)
+      // Simulate LangGraph tool start event
+      const startEvent = {
+        event: "on_tool_start",
+        run_id: "tool-run-1",
+        name: "search",
+        metadata: {},
+        tags: [],
+        data: {
+          input: {
+            input:
+              '{"name":"NewYork","country":"USA","image":"https://example.com/xian.jpg","activities":"Play&Explore","description":"I love New York"}',
+          },
+        },
+      };
+
+      await handleLangGraphEvent(startEvent, eventStream$, streamState, false);
+
+      // Simulate LangGraph tool end event
       const endEvent = {
         event: "on_tool_end",
         run_id: "tool-run-1",
@@ -937,7 +954,7 @@ describe("LangGraphServiceAdapter", () => {
         data: {
           output: new ToolMessage({
             name: "search",
-            content: "",
+            content: "Search completed successfully",
             additional_kwargs: {},
             response_metadata: {},
             tool_call_id: "tool-call-1",
@@ -950,6 +967,14 @@ describe("LangGraphServiceAdapter", () => {
       };
 
       await handleLangGraphEvent(endEvent, eventStream$, streamState, false);
+
+      // Check that ActionExecutionStart was emitted
+      const start = captured.find(
+        (e) => e.type === "ActionExecutionStart" && e.actionName === "search",
+      );
+      expect(start).toBeTruthy();
+
+      // Check that ActionExecutionArgs was emitted with correct content
       const args = captured.find(
         (e) =>
           e.type === "ActionExecutionArgs" &&
@@ -958,12 +983,28 @@ describe("LangGraphServiceAdapter", () => {
           e.args.includes("USA"),
       );
       expect(args).toBeTruthy();
+
+      // Check that ActionExecutionEnd was emitted
       const end = captured.find(
         (e) =>
           e.type === "ActionExecutionEnd" &&
-          e.actionExecutionId === args.actionExecutionId,
+          e.actionExecutionId === start.actionExecutionId,
       );
       expect(end).toBeTruthy();
+
+      // Check that ActionExecutionResult was emitted
+      const result = captured.find(
+        (e) =>
+          e.type === "ActionExecutionResult" &&
+          e.actionExecutionId === start.actionExecutionId &&
+          e.result.includes("Search completed successfully"),
+      );
+      expect(result).toBeTruthy();
+
+      // Verify all events use the same actionExecutionId
+      expect(args.actionExecutionId).toBe(start.actionExecutionId);
+      expect(end.actionExecutionId).toBe(start.actionExecutionId);
+      expect(result.actionExecutionId).toBe(start.actionExecutionId);
     });
   });
 });
