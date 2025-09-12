@@ -6,16 +6,12 @@ import type {
   MessageContent,
   ToolMessage,
 } from "@langchain/core/messages";
-import type { DynamicStructuredTool } from "@langchain/core/tools";
 import type { StreamEvent } from "@langchain/core/tracers/log_stream";
 import { START } from "@langchain/langgraph";
 import { type RuntimeEventSubject, RuntimeEventTypes } from "./internal/events";
 import type { ActionInput } from "./internal/graphql/inputs/action.input";
 import type { Message } from "./internal/graphql/types/converted";
-import {
-  convertActionInputToLangChainTool,
-  convertMessageToLangChainMessage,
-} from "./internal/langchain/utils";
+import { convertMessageToLangChainMessage } from "./internal/langchain/utils";
 import type { LangGraphInput, MessageInProgress, StreamState } from "./types";
 
 /**
@@ -46,26 +42,21 @@ export function convertCopilotKitToLangGraphInput({
       .filter((msg): msg is BaseMessage => msg !== undefined);
 
     const langChainMessages = convertedMessages;
-
-    const tools = actions
-      .map((action) => convertActionInputToLangChainTool(action))
-      .filter((tool): tool is DynamicStructuredTool => tool !== undefined);
-
-    if (debug && tools.length > 0) {
+    if (debug && actions.length > 0) {
       console.log(
-        `[DEBUG] Converted ${tools.length} CopilotKit tools to LangGraph`,
+        `[DEBUG] Converted ${actions.length} CopilotKit actions to LangGraph`,
       );
     }
 
     const result = {
       messages: langChainMessages,
-      tools,
+      actions: actions,
     };
 
     if (debug) {
       console.log("[DEBUG] LangGraphInput:", {
         messagesCount: result.messages.length,
-        toolsCount: result.tools.length,
+        actionsCount: result.actions.length,
       });
     }
 

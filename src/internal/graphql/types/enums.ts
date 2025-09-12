@@ -13,8 +13,7 @@ export enum MessageRole {
 }
 
 export enum ActionInputAvailability {
-  always = "always",
-  when_needed = "when_needed",
-  never = "never",
   disabled = "disabled",
+  enabled = "enabled",
+  remote = "remote",
 }

@@ -4,18 +4,11 @@ import type {
   CopilotServiceAdapter,
 } from "@copilotkit/runtime";
 import { convertServiceAdapterError } from "@copilotkit/runtime";
-import { randomUUID } from "@copilotkit/shared";
+import { randomUUID, tryMap } from "@copilotkit/shared";
 import { isSystemMessage } from "@langchain/core/messages";
-import type {
-  BaseChannel,
-  PregelNode,
-  PregelOptions,
-} from "@langchain/langgraph";
 import type { RuntimeEventSubject } from "./internal/events";
-import {
-  convertRuntimeActionInput,
-  convertRuntimeMessage,
-} from "./internal/type-adapters";
+import type { ActionInput } from "./internal/graphql/inputs/action.input";
+import { convertRuntimeMessage } from "./internal/type-adapters";
 import type { LangGraphInput, LangGraphServiceAdapterConfig } from "./types";
 import {
   convertCopilotKitToLangGraphInput,
@@ -57,43 +50,24 @@ export class LangGraphServiceAdapter implements CopilotServiceAdapter {
     const { eventSource, messages, actions, threadId, runId } = request;
 
     try {
-      // Convert runtime types to internal types first
       const internalMessages = messages.map((msg) =>
         convertRuntimeMessage(msg),
       );
-      const internalActions = actions.map((action) =>
-        convertRuntimeActionInput(action),
-      );
-
-      // Then convert to LangChain format
       const langGraphInput = convertCopilotKitToLangGraphInput({
         messages: internalMessages,
-        actions: internalActions,
+        actions: actions,
         debug: this.debug,
       });
 
-      const streamConfig: Partial<
-        PregelOptions<Record<string, PregelNode>, Record<string, BaseChannel>>
-      > & { version: "v1" | "v2" } = { version: "v2" };
-
       // Decide which strategy to use for handling the system prompt.
       if (this.systemPromptStrategy === "inject") {
-        let copilotkitInstructions = "";
         // Filter out the system message and store its content.
-        const filteredMessages = langGraphInput.messages.filter((msg) => {
-          if (isSystemMessage(msg)) {
-            copilotkitInstructions = msg.content as string;
-            return false; // Remove from message list
-          }
-          return true;
-        });
+        const filteredMessages = langGraphInput.messages.filter(
+          (msg) => !isSystemMessage(msg),
+        );
 
         // Update the input with the filtered messages.
         langGraphInput.messages = filteredMessages;
-        // Add the extracted instructions to the config for injection.
-        streamConfig.configurable = {
-          copilotkit_instructions: copilotkitInstructions,
-        };
 
         if (this.debug) {
           console.log(
@@ -111,11 +85,7 @@ export class LangGraphServiceAdapter implements CopilotServiceAdapter {
 
       // Process event stream
       eventSource.stream(async (eventStream$) => {
-        await this.processLangGraphStream(
-          langGraphInput,
-          streamConfig,
-          eventStream$,
-        );
+        await this.processLangGraphStream(langGraphInput, eventStream$);
       });
 
       return {
@@ -129,18 +99,13 @@ export class LangGraphServiceAdapter implements CopilotServiceAdapter {
 
   private async processLangGraphStream(
     input: LangGraphInput,
-    config: Partial<
-      PregelOptions<Record<string, PregelNode>, Record<string, BaseChannel>>
-    > & {
-      version: "v1" | "v2";
-    },
     eventStream$: RuntimeEventSubject,
   ): Promise<void> {
     if (this.debug) {
       console.log("[DEBUG] === processLangGraphStream START ===");
       console.log("[DEBUG] LangGraph input:", {
         messagesCount: input.messages.length,
-        toolsCount: input.tools.length,
+        actionsCount: input.actions.length,
         messages: input.messages.map((msg) => ({
           type: msg.constructor.name,
           content:
@@ -148,20 +113,32 @@ export class LangGraphServiceAdapter implements CopilotServiceAdapter {
               ? `${msg.content.substring(0, 100)}...`
               : msg.content,
         })),
-        tools: input.tools.map((tool) => tool.name),
+        actions: input.actions,
       });
-      if (config.configurable) {
-        console.log(
-          "[DEBUG] Injecting configurable fields:",
-          Object.keys(config.configurable),
-        );
-      }
     }
 
     const streamState = createStreamState();
 
     try {
-      const eventStream = this.agent.streamEvents(input, config);
+      const eventStream = this.agent.streamEvents(
+        {
+          messages: input.messages,
+          // Align with CoAgent behavior by passing JSON-serializable OpenAI tools
+          // into state.copilotkit.actions so nodes can bind them directly.
+          copilotkit: {
+            // Use OpenAI tool spec shape so agent nodes can bind directly
+            actions: tryMap(input.actions, (action: ActionInput) => ({
+              type: "function",
+              function: {
+                name: action.name,
+                description: action.description,
+                parameters: JSON.parse(action.jsonSchema),
+              },
+            })),
+          },
+        },
+        { version: "v2" },
+      );
 
       if (this.debug) {
         console.log(

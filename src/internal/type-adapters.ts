@@ -43,8 +43,15 @@ interface RuntimeMessage {
 }
 
 import { ActionInput } from "./graphql/inputs/action.input";
-import { Message } from "./graphql/types/converted";
-import { ActionInputAvailability } from "./graphql/types/enums";
+import {
+  ActionExecutionMessage,
+  AgentStateMessage,
+  ImageMessage,
+  Message,
+  ResultMessage,
+  TextMessage,
+} from "./graphql/types/converted";
+import { ActionInputAvailability, MessageRole } from "./graphql/types/enums";
 
 /**
  * Convert runtime ActionInput to internal ActionInput
@@ -61,20 +68,17 @@ export function convertRuntimeActionInput(
   if (runtimeAction.available) {
     const availableValue = String(runtimeAction.available);
     switch (availableValue) {
-      case "always":
-        actionInput.available = ActionInputAvailability.always;
+      case "enabled":
+        actionInput.available = ActionInputAvailability.enabled;
         break;
-      case "when_needed":
-        actionInput.available = ActionInputAvailability.when_needed;
-        break;
-      case "never":
-        actionInput.available = ActionInputAvailability.never;
+      case "remote":
+        actionInput.available = ActionInputAvailability.remote;
         break;
       case "disabled":
         actionInput.available = ActionInputAvailability.disabled;
         break;
       default:
-        actionInput.available = ActionInputAvailability.always;
+        actionInput.available = ActionInputAvailability.enabled;
     }
   }
 
@@ -85,44 +89,93 @@ export function convertRuntimeActionInput(
  * Convert runtime Message to internal Message
  */
 export function convertRuntimeMessage(runtimeMessage: RuntimeMessage): Message {
-  // Create a basic message and copy properties
-  const message = new Message();
-  message.id = runtimeMessage.id;
-  message.createdAt = runtimeMessage.createdAt;
-
-  // Copy the type and other properties based on the message type
+  // Construct specific message type instances to avoid `as any`.
   if (runtimeMessage.isTextMessage()) {
-    message.type = "TextMessage";
-    (message as any).content = runtimeMessage.content;
-    (message as any).role = runtimeMessage.role;
-    (message as any).parentMessageId = runtimeMessage.parentMessageId;
-  } else if (runtimeMessage.isActionExecutionMessage()) {
-    message.type = "ActionExecutionMessage";
-    (message as any).name = runtimeMessage.name;
-    (message as any).arguments = runtimeMessage.arguments;
-    (message as any).parentMessageId = runtimeMessage.parentMessageId;
-  } else if (runtimeMessage.isResultMessage()) {
-    message.type = "ResultMessage";
-    (message as any).actionExecutionId = runtimeMessage.actionExecutionId;
-    (message as any).actionName = runtimeMessage.actionName;
-    (message as any).result = runtimeMessage.result;
-  } else if (runtimeMessage.isAgentStateMessage()) {
-    message.type = "AgentStateMessage";
-    (message as any).threadId = runtimeMessage.threadId;
-    (message as any).agentName = runtimeMessage.agentName;
-    (message as any).nodeName = runtimeMessage.nodeName;
-    (message as any).runId = runtimeMessage.runId;
-    (message as any).active = runtimeMessage.active;
-    (message as any).role = runtimeMessage.role;
-    (message as any).state = runtimeMessage.state;
-    (message as any).running = runtimeMessage.running;
-  } else if (runtimeMessage.isImageMessage()) {
-    message.type = "ImageMessage";
-    (message as any).format = runtimeMessage.format;
-    (message as any).bytes = runtimeMessage.bytes;
-    (message as any).role = runtimeMessage.role;
-    (message as any).parentMessageId = runtimeMessage.parentMessageId;
+    const msg = new TextMessage();
+    msg.id = runtimeMessage.id;
+    msg.createdAt = runtimeMessage.createdAt;
+    if (typeof runtimeMessage.content === "string")
+      msg.content = runtimeMessage.content;
+    if (
+      runtimeMessage.role === MessageRole.user ||
+      runtimeMessage.role === MessageRole.assistant ||
+      runtimeMessage.role === MessageRole.system
+    ) {
+      msg.role = runtimeMessage.role;
+    }
+    if (runtimeMessage.parentMessageId)
+      msg.parentMessageId = runtimeMessage.parentMessageId;
+    return msg;
   }
 
-  return message;
+  if (runtimeMessage.isActionExecutionMessage()) {
+    const msg = new ActionExecutionMessage();
+    msg.id = runtimeMessage.id;
+    msg.createdAt = runtimeMessage.createdAt;
+    if (runtimeMessage.name) msg.name = runtimeMessage.name;
+    if (runtimeMessage.arguments) msg.arguments = runtimeMessage.arguments;
+    if (runtimeMessage.parentMessageId)
+      msg.parentMessageId = runtimeMessage.parentMessageId;
+    return msg;
+  }
+
+  if (runtimeMessage.isResultMessage()) {
+    const msg = new ResultMessage();
+    msg.id = runtimeMessage.id;
+    msg.createdAt = runtimeMessage.createdAt;
+    if (runtimeMessage.actionExecutionId)
+      msg.actionExecutionId = runtimeMessage.actionExecutionId;
+    if (runtimeMessage.actionName) msg.actionName = runtimeMessage.actionName;
+    if (typeof runtimeMessage.result === "string")
+      msg.result = runtimeMessage.result;
+    return msg;
+  }
+
+  if (runtimeMessage.isAgentStateMessage()) {
+    const msg = new AgentStateMessage();
+    msg.id = runtimeMessage.id;
+    msg.createdAt = runtimeMessage.createdAt;
+    if (runtimeMessage.threadId) msg.threadId = runtimeMessage.threadId;
+    if (runtimeMessage.agentName) msg.agentName = runtimeMessage.agentName;
+    if (runtimeMessage.nodeName) msg.nodeName = runtimeMessage.nodeName;
+    if (runtimeMessage.runId) msg.runId = runtimeMessage.runId;
+    if (typeof runtimeMessage.active === "boolean")
+      msg.active = runtimeMessage.active;
+    if (
+      runtimeMessage.role === MessageRole.user ||
+      runtimeMessage.role === MessageRole.assistant ||
+      runtimeMessage.role === MessageRole.system
+    ) {
+      // AgentStateMessage defaults to assistant; override if valid provided
+      msg.role = runtimeMessage.role;
+    }
+    if (runtimeMessage.state !== undefined) msg.state = runtimeMessage.state;
+    if (typeof runtimeMessage.running === "boolean")
+      msg.running = runtimeMessage.running;
+    return msg;
+  }
+
+  if (runtimeMessage.isImageMessage()) {
+    const msg = new ImageMessage();
+    msg.id = runtimeMessage.id;
+    msg.createdAt = runtimeMessage.createdAt;
+    if (runtimeMessage.format) msg.format = runtimeMessage.format;
+    if (runtimeMessage.bytes) msg.bytes = runtimeMessage.bytes;
+    if (
+      runtimeMessage.role === MessageRole.user ||
+      runtimeMessage.role === MessageRole.assistant ||
+      runtimeMessage.role === MessageRole.system
+    ) {
+      msg.role = runtimeMessage.role;
+    }
+    if (runtimeMessage.parentMessageId)
+      msg.parentMessageId = runtimeMessage.parentMessageId;
+    return msg;
+  }
+
+  // Fallback to base Message if type guards are not satisfied
+  const fallback = new Message();
+  fallback.id = runtimeMessage.id;
+  fallback.createdAt = runtimeMessage.createdAt;
+  return fallback;
 }

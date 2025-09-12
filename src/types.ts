@@ -1,6 +1,6 @@
 import type { BaseMessage } from "@langchain/core/messages";
-import type { DynamicStructuredTool } from "@langchain/core/tools";
 import type { CompiledStateGraph } from "@langchain/langgraph";
+import type { ActionInput } from "./internal/graphql/inputs/action.input";
 
 /**
  * Type alias for any CompiledStateGraph instance
@@ -58,7 +58,7 @@ export interface LangGraphServiceAdapterConfig {
  */
 export interface LangGraphInput {
   messages: BaseMessage[];
-  tools: DynamicStructuredTool[];
+  actions: ActionInput[];
 }
 
 /**

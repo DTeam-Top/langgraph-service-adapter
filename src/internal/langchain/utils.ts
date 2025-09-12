@@ -4,7 +4,6 @@
  * License: MIT
  */
 
-import { convertJsonSchemaToZodSchema } from "@copilotkit/shared";
 import {
   AIMessage,
   type BaseMessage,
@@ -12,8 +11,6 @@ import {
   SystemMessage,
   ToolMessage,
 } from "@langchain/core/messages";
-import { DynamicStructuredTool } from "@langchain/core/tools";
-import type { ActionInput } from "../graphql/inputs/action.input";
 import type { Message } from "../graphql/types/converted";
 
 export function convertMessageToLangChainMessage(
@@ -45,20 +42,4 @@ export function convertMessageToLangChainMessage(
     });
   }
   return undefined;
-}
-
-export function convertActionInputToLangChainTool(
-  actionInput: ActionInput,
-): any {
-  return new DynamicStructuredTool({
-    name: actionInput.name,
-    description: actionInput.description,
-    schema: convertJsonSchemaToZodSchema(
-      JSON.parse(actionInput.jsonSchema),
-      true,
-    ) as any,
-    func: async () => {
-      return "";
-    },
-  }) as any;
 }
