@@ -72,23 +72,10 @@ export interface LangGraphInput {
 export interface StreamState {
   /** Current run ID for this stream */
   runId: string;
-  /** Map of run IDs to their in-progress message states */
-  messagesInProgress: Map<string, MessageInProgress>;
+  /** ID of the in-progress message */
+  idInProgress: string | null;
   /** Currently executing LangGraph node name */
   currentNodeName?: string;
-  /** Whether an error has occurred during processing */
-  hasError: boolean;
-  /** Whether any tool activity has occurred in this run */
-  hasToolActivity: boolean;
-  /** Last action execution id observed in this run */
-  lastActionExecutionId?: string;
-}
-
-/**
- * Message in progress state
- */
-export interface MessageInProgress {
-  id: string;
-  toolCallId?: string | null;
-  toolCallName?: string | null;
+  /** Mode of the current message, inspected from the LangChainAdapter handler */
+  mode: "function" | "message" | null;
 }

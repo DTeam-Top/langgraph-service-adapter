@@ -12,7 +12,7 @@ import { type RuntimeEventSubject, RuntimeEventTypes } from "./internal/events";
 import type { ActionInput } from "./internal/graphql/inputs/action.input";
 import type { Message } from "./internal/graphql/types/converted";
 import { convertMessageToLangChainMessage } from "./internal/langchain/utils";
-import type { LangGraphInput, MessageInProgress, StreamState } from "./types";
+import type { LangGraphInput, StreamState } from "./types";
 
 /**
  * Convert CopilotKit format to LangGraph input
@@ -79,12 +79,9 @@ export function convertCopilotKitToLangGraphInput({
 export function createStreamState(): StreamState {
   return {
     runId: randomUUID(),
-    messagesInProgress: new Map(),
+    idInProgress: null,
     currentNodeName: undefined,
-    hasError: false,
-    // Track tool usage within the current run to control message emission
-    hasToolActivity: false,
-    lastActionExecutionId: undefined,
+    mode: null,
   };
 }
 
@@ -163,54 +160,31 @@ async function handleChatModelStream(
 ): Promise<void> {
   const chunk = event.data?.chunk as AIMessageChunk;
 
-  const shouldEmitMessages =
-    event.metadata?.["copilotkit:emit-messages"] ?? true;
-
   // Skip if finished
   if (chunk.response_metadata?.finish_reason) return;
-
-  // Suppress assistant text once a tool call is present or has occurred in this run
-  // This keeps the response tail on action messages so the frontend executes handlers.
-  const toolCallChunks = chunk?.tool_call_chunks;
-  const hasToolCallInChunk = toolCallChunks && toolCallChunks.length > 0;
-
-  if (hasToolCallInChunk || streamState.hasToolActivity) {
-    const inProgress = getMessageInProgress(streamState.runId, streamState);
-    if (inProgress?.id && !inProgress.toolCallId) {
-      // End any in-progress text to prevent trailing text
-      eventStream$.sendTextMessageEnd({ messageId: inProgress.id });
-      streamState.messagesInProgress.delete(streamState.runId);
-    }
-    return;
-  }
-
-  let currentStream = getMessageInProgress(streamState.runId, streamState);
-  const hasCurrentStream = Boolean(currentStream?.id);
-
   const messageContent = resolveMessageContent(chunk.content);
+  const messageId = chunk.id || randomUUID();
 
-  if (messageContent && shouldEmitMessages) {
-    if (!hasCurrentStream || currentStream?.toolCallId) {
-      const messageId = chunk.id || randomUUID();
-      eventStream$.sendTextMessageStart({
-        messageId: messageId,
+  if (messageContent) {
+    if (streamState.mode === "function" && streamState.idInProgress) {
+      eventStream$.sendActionExecutionEnd({
+        actionExecutionId: streamState.idInProgress,
       });
-
-      setMessageInProgress(
-        streamState.runId,
-        {
-          id: messageId,
-          toolCallId: null,
-          toolCallName: null,
-        },
-        streamState,
-      );
-      currentStream = getMessageInProgress(streamState.runId, streamState);
+      streamState.mode = null;
+      streamState.idInProgress = null;
     }
 
-    if (currentStream?.id) {
+    if (streamState.mode === null) {
+      streamState.mode = "message";
+      streamState.idInProgress = messageId;
+      eventStream$.sendTextMessageStart({
+        messageId,
+      });
+    }
+
+    if (streamState.mode === "message" && streamState.idInProgress) {
       eventStream$.sendTextMessageContent({
-        messageId: currentStream.id,
+        messageId: streamState.idInProgress,
         content: messageContent,
       });
     }
@@ -224,14 +198,13 @@ async function handleChatModelEnd(
   eventStream$: RuntimeEventSubject,
   streamState: StreamState,
 ): Promise<void> {
-  const currentStream = getMessageInProgress(streamState.runId, streamState);
-  if (currentStream?.id) {
+  if (streamState.mode === "message" && streamState.idInProgress) {
     eventStream$.sendTextMessageEnd({
-      messageId: currentStream.id,
+      messageId: streamState.idInProgress,
     });
+    streamState.mode = null;
+    streamState.idInProgress = null;
   }
-
-  streamState.messagesInProgress.delete(streamState.runId);
 }
 
 /**
@@ -278,29 +251,32 @@ async function handleToolStart(
     argsStr = "";
   }
 
-  // CRITICAL: If a text message is currently in progress, end it before starting tool execution
-  // This prevents text streaming from interfering with tool execution UI
-  const inProgress = getMessageInProgress(streamState.runId, streamState);
-  if (inProgress?.id && !inProgress.toolCallId) {
-    eventStream$.sendTextMessageEnd({ messageId: inProgress.id });
-    streamState.messagesInProgress.delete(streamState.runId);
+  if (streamState.mode === "message" && streamState.idInProgress) {
+    eventStream$.sendTextMessageEnd({
+      messageId: streamState.idInProgress,
+    });
+    streamState.mode = null;
+    streamState.idInProgress = null;
   }
 
-  // Send action execution start event
-  eventStream$.sendActionExecutionStart({
-    actionExecutionId,
-    actionName: toolName,
-  });
+  if (streamState.mode === null) {
+    streamState.mode = "function";
+  }
 
-  // Send action arguments - this will trigger the frontend to transition from 'inProgress' to 'executing'
-  eventStream$.sendActionExecutionArgs({
-    actionExecutionId,
-    args: argsStr,
-  });
+  if (streamState.mode === "function") {
+    // Send action execution start event
+    eventStream$.sendActionExecutionStart({
+      actionExecutionId,
+      actionName: toolName,
+    });
 
-  // Mark tool activity and store execution ID for the end event
-  streamState.hasToolActivity = true;
-  streamState.lastActionExecutionId = actionExecutionId;
+    // Send action arguments - this will trigger the frontend to transition from 'inProgress' to 'executing'
+    eventStream$.sendActionExecutionArgs({
+      actionExecutionId,
+      args: argsStr,
+    });
+    streamState.idInProgress = actionExecutionId;
+  }
 }
 
 /**
@@ -311,23 +287,25 @@ async function handleToolEnd(
   eventStream$: RuntimeEventSubject,
   streamState: StreamState,
 ): Promise<void> {
-  // Use the stored execution ID from tool start, or fall back to generating one
-  const actionExecutionId =
-    streamState.lastActionExecutionId || event.run_id || randomUUID();
+  if (streamState.mode === "function" && streamState.idInProgress) {
+    const actionExecutionId = streamState.idInProgress;
 
-  // Extract result from tool output
-  const toolMessage = event.data?.output as ToolMessage;
-  const result = toolMessage?.content || "";
+    // Extract result from tool output
+    const toolMessage = event.data?.output as ToolMessage;
+    const result = toolMessage?.content || "";
 
-  // Send action execution end event
-  eventStream$.sendActionExecutionEnd({ actionExecutionId });
+    // Send action execution end event
+    eventStream$.sendActionExecutionEnd({ actionExecutionId });
 
-  // Send action execution result
-  eventStream$.sendActionExecutionResult({
-    actionExecutionId,
-    actionName: streamState.currentNodeName || "tool",
-    result: typeof result === "string" ? result : JSON.stringify(result),
-  });
+    // Send action execution result
+    eventStream$.sendActionExecutionResult({
+      actionExecutionId,
+      actionName: streamState.currentNodeName || "tool",
+      result: typeof result === "string" ? result : JSON.stringify(result),
+    });
+    streamState.mode = null;
+    streamState.idInProgress = null;
+  }
 }
 
 /**
@@ -353,25 +331,4 @@ export function resolveMessageContent(content?: MessageContent): string | null {
   }
 
   return null;
-}
-
-/**
- * Get message in progress from stream state
- */
-export function getMessageInProgress(
-  runId: string,
-  state: StreamState,
-): MessageInProgress | null {
-  return state.messagesInProgress.get(runId) || null;
-}
-
-/**
- * Set message in progress in stream state
- */
-export function setMessageInProgress(
-  runId: string,
-  message: MessageInProgress,
-  state: StreamState,
-): void {
-  state.messagesInProgress.set(runId, message);
 }
