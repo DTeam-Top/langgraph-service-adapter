@@ -76,12 +76,12 @@ export function convertCopilotKitToLangGraphInput({
 /**
  * Create initial stream state
  */
-export function createStreamState(): StreamState {
+export function createStreamState(params?: { runId?: string }): StreamState {
   return {
-    runId: randomUUID(),
-    idInProgress: null,
+    runId: params?.runId || randomUUID(),
+    assistantMessageId: undefined,
     currentNodeName: undefined,
-    mode: null,
+    toolRunIdToActionId: new Map<string, string>(),
   };
 }
 
@@ -163,31 +163,17 @@ async function handleChatModelStream(
   // Skip if finished
   if (chunk.response_metadata?.finish_reason) return;
   const messageContent = resolveMessageContent(chunk.content);
-  const messageId = chunk.id || randomUUID();
+  const messageId = streamState.assistantMessageId || chunk.id || randomUUID();
 
   if (messageContent) {
-    if (streamState.mode === "function" && streamState.idInProgress) {
-      eventStream$.sendActionExecutionEnd({
-        actionExecutionId: streamState.idInProgress,
-      });
-      streamState.mode = null;
-      streamState.idInProgress = null;
+    if (!streamState.assistantMessageId) {
+      streamState.assistantMessageId = messageId;
+      eventStream$.sendTextMessageStart({ messageId });
     }
-
-    if (streamState.mode === null) {
-      streamState.mode = "message";
-      streamState.idInProgress = messageId;
-      eventStream$.sendTextMessageStart({
-        messageId,
-      });
-    }
-
-    if (streamState.mode === "message" && streamState.idInProgress) {
-      eventStream$.sendTextMessageContent({
-        messageId: streamState.idInProgress,
-        content: messageContent,
-      });
-    }
+    eventStream$.sendTextMessageContent({
+      messageId: streamState.assistantMessageId,
+      content: messageContent,
+    });
   }
 }
 
@@ -198,12 +184,11 @@ async function handleChatModelEnd(
   eventStream$: RuntimeEventSubject,
   streamState: StreamState,
 ): Promise<void> {
-  if (streamState.mode === "message" && streamState.idInProgress) {
+  if (streamState.assistantMessageId) {
     eventStream$.sendTextMessageEnd({
-      messageId: streamState.idInProgress,
+      messageId: streamState.assistantMessageId,
     });
-    streamState.mode = null;
-    streamState.idInProgress = null;
+    streamState.assistantMessageId = undefined;
   }
 }
 
@@ -232,7 +217,13 @@ async function handleToolStart(
 ): Promise<void> {
   // Extract tool information from the start event
   const toolName = event.name || streamState.currentNodeName || "tool";
-  const actionExecutionId = event.run_id || randomUUID();
+  const runId = event.run_id || randomUUID();
+  // Ensure stable actionExecutionId per tool run
+  let actionExecutionId = streamState.toolRunIdToActionId.get(runId);
+  if (!actionExecutionId) {
+    actionExecutionId = runId;
+    streamState.toolRunIdToActionId.set(runId, actionExecutionId);
+  }
 
   // Extract arguments from the input
   let argsStr = "";
@@ -251,32 +242,13 @@ async function handleToolStart(
     argsStr = "";
   }
 
-  if (streamState.mode === "message" && streamState.idInProgress) {
-    eventStream$.sendTextMessageEnd({
-      messageId: streamState.idInProgress,
-    });
-    streamState.mode = null;
-    streamState.idInProgress = null;
-  }
-
-  if (streamState.mode === null) {
-    streamState.mode = "function";
-  }
-
-  if (streamState.mode === "function") {
-    // Send action execution start event
-    eventStream$.sendActionExecutionStart({
-      actionExecutionId,
-      actionName: toolName,
-    });
-
-    // Send action arguments - this will trigger the frontend to transition from 'inProgress' to 'executing'
-    eventStream$.sendActionExecutionArgs({
-      actionExecutionId,
-      args: argsStr,
-    });
-    streamState.idInProgress = actionExecutionId;
-  }
+  // Immediate: Never end text; just stream action lifecycle
+  eventStream$.sendActionExecutionStart({
+    actionExecutionId,
+    actionName: toolName,
+    parentMessageId: streamState.assistantMessageId,
+  });
+  eventStream$.sendActionExecutionArgs({ actionExecutionId, args: argsStr });
 }
 
 /**
@@ -287,25 +259,23 @@ async function handleToolEnd(
   eventStream$: RuntimeEventSubject,
   streamState: StreamState,
 ): Promise<void> {
-  if (streamState.mode === "function" && streamState.idInProgress) {
-    const actionExecutionId = streamState.idInProgress;
-
-    // Extract result from tool output
-    const toolMessage = event.data?.output as ToolMessage;
-    const result = toolMessage?.content || "";
-
-    // Send action execution end event
-    eventStream$.sendActionExecutionEnd({ actionExecutionId });
-
-    // Send action execution result
-    eventStream$.sendActionExecutionResult({
-      actionExecutionId,
-      actionName: streamState.currentNodeName || "tool",
-      result: typeof result === "string" ? result : JSON.stringify(result),
-    });
-    streamState.mode = null;
-    streamState.idInProgress = null;
+  const toolMessage = event.data?.output as ToolMessage;
+  const resultValue = toolMessage?.content || "";
+  const runId = event.run_id || randomUUID();
+  let actionExecutionId = streamState.toolRunIdToActionId.get(runId);
+  if (!actionExecutionId) {
+    actionExecutionId = runId;
+    streamState.toolRunIdToActionId.set(runId, actionExecutionId);
   }
+  eventStream$.sendActionExecutionEnd({ actionExecutionId });
+  eventStream$.sendActionExecutionResult({
+    actionExecutionId,
+    actionName: event.name || streamState.currentNodeName || "tool",
+    result:
+      typeof resultValue === "string"
+        ? resultValue
+        : JSON.stringify(resultValue),
+  });
 }
 
 /**

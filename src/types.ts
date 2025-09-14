@@ -72,10 +72,10 @@ export interface LangGraphInput {
 export interface StreamState {
   /** Current run ID for this stream */
   runId: string;
-  /** ID of the in-progress message */
-  idInProgress: string | null;
-  /** Currently executing LangGraph node name */
+  /** Assistant message id used for the streaming text in this run (if any) */
+  assistantMessageId?: string;
+  /** Currently executing LangGraph node name (optional, for labeling) */
   currentNodeName?: string;
-  /** Mode of the current message, inspected from the LangChainAdapter handler */
-  mode: "function" | "message" | null;
+  /** Map LangGraph tool run_id -> emitted actionExecutionId */
+  toolRunIdToActionId: Map<string, string>;
 }

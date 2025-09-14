@@ -85,7 +85,9 @@ export class LangGraphServiceAdapter implements CopilotServiceAdapter {
 
       // Process event stream
       eventSource.stream(async (eventStream$) => {
-        await this.processLangGraphStream(langGraphInput, eventStream$);
+        await this.processLangGraphStream(langGraphInput, eventStream$, {
+          runId,
+        });
       });
 
       return {
@@ -100,6 +102,7 @@ export class LangGraphServiceAdapter implements CopilotServiceAdapter {
   private async processLangGraphStream(
     input: LangGraphInput,
     eventStream$: RuntimeEventSubject,
+    opts?: { runId?: string },
   ): Promise<void> {
     if (this.debug) {
       console.log("[DEBUG] === processLangGraphStream START ===");
@@ -117,7 +120,7 @@ export class LangGraphServiceAdapter implements CopilotServiceAdapter {
       });
     }
 
-    const streamState = createStreamState();
+    const streamState = createStreamState({ runId: opts?.runId });
 
     try {
       const eventStream = this.agent.streamEvents(
