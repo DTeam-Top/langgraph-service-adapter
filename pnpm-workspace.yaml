@@ -2,3 +2,4 @@ onlyBuiltDependencies:
   - '@scarf/scarf'
   - esbuild
   - protobufjs
+  - unrs-resolver
