@@ -198,13 +198,14 @@ export class LangGraphServiceAdapter implements CopilotServiceAdapter {
 
         const chatModelStreamCount =
           eventTypes.get("on_chat_model_stream") || 0;
-        if (chatModelStreamCount === 0) {
+        const chatModelEndCount = eventTypes.get("on_chat_model_end") || 0;
+        if (chatModelStreamCount + chatModelEndCount === 0) {
           console.warn(
-            "[DEBUG] ⚠️  NO on_chat_model_stream EVENTS! This explains why there are no TextMessage events.",
+            "[DEBUG] ⚠️  NO on_chat_model_stream and on_chat_model_end EVENTS! This explains why there are no TextMessage events.",
           );
         } else {
           console.log(
-            `[DEBUG] ✅ Found ${chatModelStreamCount} on_chat_model_stream events`,
+            `[DEBUG] ✅ Found ${chatModelStreamCount} on_chat_model_stream events and ${chatModelEndCount} on_chat_model_end events.`,
           );
         }
 

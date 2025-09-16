@@ -21,7 +21,7 @@ export type AnyCompiledStateGraph = CompiledStateGraph<
 /**
  * Configuration for LangGraphServiceAdapter
  */
-export interface LangGraphServiceAdapterConfig {
+export type LangGraphServiceAdapterConfig = {
   /** LangGraph agent instance */
   agent: AnyCompiledStateGraph;
 
@@ -51,15 +51,15 @@ export interface LangGraphServiceAdapterConfig {
    * @default 'passthrough'
    */
   systemPromptStrategy?: "passthrough" | "inject";
-}
+};
 
 /**
  * LangGraph input format for direct integration
  */
-export interface LangGraphInput {
+export type LangGraphInput = {
   messages: BaseMessage[];
   actions: ActionInput[];
-}
+};
 
 /**
  * Stream state for managing message and tool call states during LangGraph event processing
@@ -69,13 +69,17 @@ export interface LangGraphInput {
  * - We need to track complex streaming scenarios (concurrent messages, tool calls, node execution)
  * - Provides unified state management compared to scattered local variables
  */
-export interface StreamState {
+export type StreamState = {
   /** Current run ID for this stream */
   runId: string;
   /** Assistant message id used for the streaming text in this run (if any) */
   assistantMessageId?: string;
   /** Currently executing LangGraph node name (optional, for labeling) */
   currentNodeName?: string;
+  /**
+   * Whether the current stream contains any chat model streaming messages.
+   */
+  containsChatStreamingMessage?: boolean;
   /** Map LangGraph tool run_id -> emitted actionExecutionId */
   toolRunIdToActionId: Map<string, string>;
-}
+};

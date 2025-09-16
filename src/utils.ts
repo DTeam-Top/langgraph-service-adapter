@@ -9,9 +9,12 @@ import type {
 } from "@langchain/core/messages";
 import type { StreamEvent } from "@langchain/core/tracers/log_stream";
 import { START } from "@langchain/langgraph";
-import { type RuntimeEventSubject, RuntimeEventTypes } from "./internal/events";
-import type { ActionInput } from "./internal/graphql/inputs/action.input";
-import type { Message } from "./internal/graphql/types/converted";
+import { RuntimeEventTypes } from "./internal/events";
+import type {
+  ActionInput,
+  Message,
+  RuntimeEventSubject,
+} from "./internal/internal-types";
 import { convertMessageToLangChainMessage } from "./internal/langchain/utils";
 import type { LangGraphInput, StreamState } from "./types";
 
