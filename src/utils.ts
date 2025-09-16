@@ -97,6 +97,7 @@ export async function handleLangGraphEvent(
   eventStream$: RuntimeEventSubject,
   streamState: StreamState,
   debug = false,
+  metadata: Record<string, unknown> = {},
 ): Promise<void> {
   try {
     if (debug) {
@@ -109,19 +110,36 @@ export async function handleLangGraphEvent(
       streamState.runId = event.run_id;
     }
 
+    const shouldEmitMessages: boolean =
+      event.metadata?.["copilotkit:emit-messages"] ??
+      metadata?.["copilotkit:emit-messages"] ??
+      true;
+    const shouldEmitToolCalls: boolean =
+      event.metadata?.["copilotkit:emit-tool-calls"] ??
+      metadata?.["copilotkit:emit-tool-calls"] ??
+      true;
+
     // Direct LangGraph event processing - simplified approach
     switch (event.event) {
       case "on_chat_model_stream":
-        await handleChatModelStream(event, eventStream$, streamState);
+        if (shouldEmitMessages) {
+          await handleChatModelStream(event, eventStream$, streamState);
+        }
         break;
       case "on_chat_model_end":
-        await handleChatModelEnd(event, eventStream$, streamState);
+        if (shouldEmitMessages) {
+          await handleChatModelEnd(event, eventStream$, streamState);
+        }
         break;
       case "on_tool_start":
-        await handleToolStart(event, eventStream$, streamState);
+        if (shouldEmitToolCalls) {
+          await handleToolStart(event, eventStream$, streamState);
+        }
         break;
       case "on_tool_end": {
-        await handleToolEnd(event, eventStream$, streamState);
+        if (shouldEmitToolCalls) {
+          await handleToolEnd(event, eventStream$, streamState);
+        }
         break;
       }
       case "on_custom_event":

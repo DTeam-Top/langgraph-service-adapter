@@ -75,18 +75,10 @@ interface LangGraphServiceAdapterConfig {
   agent: AnyCompiledStateGraph;
   /** Debug mode (optional) */
   debug?: boolean;
-  /** System prompt strategy (optional) */
-  systemPromptStrategy?: "passthrough" | "inject";
+  /** Metadata (optional) */
+  metadata?: Record<string, unknown>;
 }
 ```
-
-##### systemPromptStrategy
-
-Specifies how to handle the system prompt from the CopilotKit frontend:
-
-- **`passthrough` (default):** For agents without a built-in system prompt. The frontend's system prompt is passed directly to the agent as a `SystemMessage`.
-
-- **`inject`:** For agents that have their own system prompt defined via a template. The adapter intercepts the frontend's system prompt, removes it from the message list, and injects its content into the agent's prompt template via the `configurable` field under the key `copilotkit_instructions`.
 
 ### Types
 
@@ -170,45 +162,6 @@ const agent = workflow.compile();
 const serviceAdapter = new LangGraphServiceAdapter({
   agent,
   debug: process.env.NODE_ENV === "development",
-});
-```
-
-### System Prompt Strategy Examples
-
-#### Passthrough Strategy (Default)
-
-For agents without a built-in system prompt:
-
-```typescript
-import { createReactAgent } from "@langchain/langgraph/prebuilt";
-
-const agent = createReactAgent({
-  llm: chatModel,
-  tools: [],
-});
-
-const serviceAdapter = new LangGraphServiceAdapter({
-  agent: agent,
-});
-```
-
-#### Inject Strategy
-
-For agents that have their own system prompt defined via a template:
-
-```typescript
-import { createReactAgent } from "@langchain/langgraph/prebuilt";
-import { SystemMessage } from "@langchain/core/messages";
-
-const agent = createReactAgent({
-  llm: chatModel,
-  tools: [],
-  prompt: new SystemMessage("You are a helpful assistant"),
-});
-
-const serviceAdapter = new LangGraphServiceAdapter({
-  agent,
-  systemPromptStrategy: "inject",
 });
 ```
 

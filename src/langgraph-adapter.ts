@@ -5,7 +5,6 @@ import type {
 } from "@copilotkit/runtime";
 import { convertServiceAdapterError } from "@copilotkit/runtime";
 import { randomUUID, tryMap } from "@copilotkit/shared";
-import { isSystemMessage } from "@langchain/core/messages";
 import type { RuntimeEventSubject } from "./internal/events";
 import type { ActionInput } from "./internal/graphql/inputs/action.input";
 import { convertRuntimeMessage } from "./internal/type-adapters";
@@ -28,17 +27,16 @@ import {
 export class LangGraphServiceAdapter implements CopilotServiceAdapter {
   private agent: LangGraphServiceAdapterConfig["agent"];
   private debug: boolean;
-  private systemPromptStrategy: "passthrough" | "inject";
+  private metadata: Record<string, unknown>;
 
   constructor(config: LangGraphServiceAdapterConfig) {
     this.agent = config.agent;
     this.debug = config.debug || false;
-    this.systemPromptStrategy = config.systemPromptStrategy ?? "passthrough";
-
+    this.metadata = config.metadata || {};
     if (this.debug) {
       console.log("[DEBUG] LangGraphServiceAdapter created with config:", {
         debug: this.debug,
-        systemPromptStrategy: this.systemPromptStrategy,
+        metadata: this.metadata,
       });
       console.log("[DEBUG] Agent type:", this.agent.constructor.name);
     }
@@ -58,30 +56,6 @@ export class LangGraphServiceAdapter implements CopilotServiceAdapter {
         actions: actions,
         debug: this.debug,
       });
-
-      // Decide which strategy to use for handling the system prompt.
-      if (this.systemPromptStrategy === "inject") {
-        // Filter out the system message and store its content.
-        const filteredMessages = langGraphInput.messages.filter(
-          (msg) => !isSystemMessage(msg),
-        );
-
-        // Update the input with the filtered messages.
-        langGraphInput.messages = filteredMessages;
-
-        if (this.debug) {
-          console.log(
-            "[DEBUG] 'inject' strategy active. Instructions extracted and messages filtered.",
-          );
-        }
-      } else {
-        // For 'passthrough' strategy, do nothing. The input is used as is.
-        if (this.debug) {
-          console.log(
-            "[DEBUG] 'passthrough' strategy active. Passing all messages directly.",
-          );
-        }
-      }
 
       // Process event stream
       eventSource.stream(async (eventStream$) => {
@@ -180,6 +154,7 @@ export class LangGraphServiceAdapter implements CopilotServiceAdapter {
           eventStream$,
           streamState,
           this.debug,
+          this.metadata,
         );
       }
 
