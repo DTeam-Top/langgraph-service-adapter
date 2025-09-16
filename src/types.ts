@@ -68,4 +68,8 @@ export type StreamState = {
   containsChatStreamingMessage?: boolean;
   /** Map LangGraph tool run_id -> emitted actionExecutionId */
   toolRunIdToActionId: Map<string, string>;
+  /**
+   * frontend action names
+   */
+  frontendActions: string[];
 };

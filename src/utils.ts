@@ -80,12 +80,16 @@ export function convertCopilotKitToLangGraphInput({
 /**
  * Create initial stream state
  */
-export function createStreamState(params?: { runId?: string }): StreamState {
+export function createStreamState(params?: {
+  runId?: string;
+  frontendActions?: string[];
+}): StreamState {
   return {
     runId: params?.runId || randomUUID(),
     assistantMessageId: undefined,
     currentNodeName: undefined,
     toolRunIdToActionId: new Map<string, string>(),
+    frontendActions: params?.frontendActions || [],
   };
 }
 
@@ -97,7 +101,7 @@ export async function handleLangGraphEvent(
   eventStream$: RuntimeEventSubject,
   streamState: StreamState,
   debug = false,
-  metadata: Record<string, unknown> = {},
+  metadata: Record<string, unknown>,
 ): Promise<void> {
   try {
     if (debug) {
@@ -110,36 +114,19 @@ export async function handleLangGraphEvent(
       streamState.runId = event.run_id;
     }
 
-    const shouldEmitMessages: boolean =
-      event.metadata?.["copilotkit:emit-messages"] ??
-      metadata?.["copilotkit:emit-messages"] ??
-      true;
-    const shouldEmitToolCalls: boolean =
-      event.metadata?.["copilotkit:emit-tool-calls"] ??
-      metadata?.["copilotkit:emit-tool-calls"] ??
-      true;
-
     // Direct LangGraph event processing - simplified approach
     switch (event.event) {
       case "on_chat_model_stream":
-        if (shouldEmitMessages) {
-          await handleChatModelStream(event, eventStream$, streamState);
-        }
+        await handleChatModelStream(event, eventStream$, streamState, metadata);
         break;
       case "on_chat_model_end":
-        if (shouldEmitMessages) {
-          await handleChatModelEnd(event, eventStream$, streamState);
-        }
+        await handleChatModelEnd(event, eventStream$, streamState, metadata);
         break;
       case "on_tool_start":
-        if (shouldEmitToolCalls) {
-          await handleToolStart(event, eventStream$, streamState);
-        }
+        await handleToolStart(event, eventStream$, streamState, metadata);
         break;
       case "on_tool_end": {
-        if (shouldEmitToolCalls) {
-          await handleToolEnd(event, eventStream$, streamState);
-        }
+        await handleToolEnd(event, eventStream$, streamState, metadata);
         break;
       }
       case "on_custom_event":
@@ -179,7 +166,14 @@ async function handleChatModelStream(
   event: StreamEvent,
   eventStream$: RuntimeEventSubject,
   streamState: StreamState,
+  metadata: Record<string, unknown>,
 ): Promise<void> {
+  const shouldEmitMessage = getShouldEmitMessagesFromMetadata(
+    event.metadata,
+    metadata,
+  );
+  if (!shouldEmitMessage) return;
+
   const chunk = event.data?.chunk as AIMessageChunk;
 
   // Skip if finished
@@ -206,20 +200,46 @@ async function handleChatModelEnd(
   event: StreamEvent,
   eventStream$: RuntimeEventSubject,
   streamState: StreamState,
+  metadata: Record<string, unknown>,
 ): Promise<void> {
-  if (streamState.assistantMessageId) {
-    eventStream$.sendTextMessageEnd({
-      messageId: streamState.assistantMessageId,
-    });
-    streamState.assistantMessageId = undefined;
-  } else {
-    const aiMessage = event.data.output as AIMessage;
-    const messageId = aiMessage.id || randomUUID();
-    const messageContent = resolveMessageContent(aiMessage.content);
+  const shouldEmitMessage = getShouldEmitMessagesFromMetadata(
+    event.metadata,
+    metadata,
+  );
+  const shouldEmitToolCalls = getShouldEmitToolCallsFromMetadata(
+    event.metadata,
+    metadata,
+  );
 
-    if (messageContent) {
-      eventStream$.sendTextMessage(messageId, messageContent);
+  const aiMessage = event.data.output as AIMessage;
+  if (shouldEmitMessage) {
+    if (streamState.assistantMessageId) {
+      eventStream$.sendTextMessageEnd({
+        messageId: streamState.assistantMessageId,
+      });
+      streamState.assistantMessageId = undefined;
+    } else {
+      const messageId = aiMessage.id || randomUUID();
+      const messageContent = resolveMessageContent(aiMessage.content);
+
+      if (messageContent) {
+        eventStream$.sendTextMessage(messageId, messageContent);
+      }
     }
+  }
+
+  const toolCalls = aiMessage.tool_calls;
+  if (shouldEmitToolCalls && streamState.frontendActions && toolCalls) {
+    toolCalls.forEach((toolCall) => {
+      const toolName = toolCall.name;
+      if (toolName && streamState.frontendActions.includes(toolName)) {
+        eventStream$.sendActionExecution({
+          actionExecutionId: toolCall.id || randomUUID(),
+          actionName: toolName,
+          args: JSON.stringify(toolCall.args || {}),
+        });
+      }
+    });
   }
 }
 
@@ -245,7 +265,14 @@ async function handleToolStart(
   event: StreamEvent,
   eventStream$: RuntimeEventSubject,
   streamState: StreamState,
+  metadata: Record<string, unknown>,
 ): Promise<void> {
+  const shouldEmitToolCalls = getShouldEmitToolCallsFromMetadata(
+    event.metadata,
+    metadata,
+  );
+  if (!shouldEmitToolCalls) return;
+
   // Extract tool information from the start event
   const toolName = event.name || streamState.currentNodeName || "tool";
   const runId = event.run_id || randomUUID();
@@ -289,7 +316,14 @@ async function handleToolEnd(
   event: StreamEvent,
   eventStream$: RuntimeEventSubject,
   streamState: StreamState,
+  metadata: Record<string, unknown>,
 ): Promise<void> {
+  const shouldEmitToolCalls = getShouldEmitToolCallsFromMetadata(
+    event.metadata,
+    metadata,
+  );
+  if (!shouldEmitToolCalls) return;
+
   const toolMessage = event.data?.output as ToolMessage;
   const resultValue = toolMessage?.content || "";
   const runId = event.run_id || randomUUID();
@@ -332,4 +366,26 @@ export function resolveMessageContent(content?: MessageContent): string | null {
   }
 
   return null;
+}
+
+function getShouldEmitMessagesFromMetadata(
+  eventMetadata?: Record<string, unknown>,
+  metadata?: Record<string, unknown>,
+): boolean {
+  return (
+    (eventMetadata?.["copilotkit:emit-messages"] as boolean) ??
+    (metadata?.["copilotkit:emit-messages"] as boolean) ??
+    true
+  );
+}
+
+function getShouldEmitToolCallsFromMetadata(
+  eventMetadata?: Record<string, unknown>,
+  metadata?: Record<string, unknown>,
+): boolean {
+  return (
+    (eventMetadata?.["copilotkit:emit-tool-calls"] as boolean) ??
+    (metadata?.["copilotkit:emit-tool-calls"] as boolean) ??
+    true
+  );
 }

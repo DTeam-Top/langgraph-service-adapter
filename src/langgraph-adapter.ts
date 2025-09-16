@@ -6,7 +6,7 @@ import type {
 import { convertServiceAdapterError } from "@copilotkit/runtime";
 import { randomUUID, tryMap } from "@copilotkit/shared";
 import type { RuntimeEventSubject } from "./internal/events";
-import type { ActionInput } from "./internal/graphql/inputs/action.input";
+import type { ActionInput } from "./internal/internal-types";
 import { convertRuntimeMessage } from "./internal/type-adapters";
 import type { LangGraphInput, LangGraphServiceAdapterConfig } from "./types";
 import {
@@ -94,7 +94,11 @@ export class LangGraphServiceAdapter implements CopilotServiceAdapter {
       });
     }
 
-    const streamState = createStreamState({ runId: opts?.runId });
+    const frontendActions = input.actions.map((action) => action.name);
+    const streamState = createStreamState({
+      runId: opts?.runId,
+      frontendActions,
+    });
 
     try {
       const eventStream = this.agent.streamEvents(
