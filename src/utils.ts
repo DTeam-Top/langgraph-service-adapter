@@ -1,6 +1,7 @@
 import { convertServiceAdapterError } from "@copilotkit/runtime";
 import { randomUUID } from "@copilotkit/shared";
 import type {
+  AIMessage,
   AIMessageChunk,
   BaseMessage,
   MessageContent,
@@ -111,7 +112,7 @@ export async function handleLangGraphEvent(
         await handleChatModelStream(event, eventStream$, streamState);
         break;
       case "on_chat_model_end":
-        await handleChatModelEnd(eventStream$, streamState);
+        await handleChatModelEnd(event, eventStream$, streamState);
         break;
       case "on_tool_start":
         await handleToolStart(event, eventStream$, streamState);
@@ -181,6 +182,7 @@ async function handleChatModelStream(
  * Handle chat model end events
  */
 async function handleChatModelEnd(
+  event: StreamEvent,
   eventStream$: RuntimeEventSubject,
   streamState: StreamState,
 ): Promise<void> {
@@ -189,6 +191,14 @@ async function handleChatModelEnd(
       messageId: streamState.assistantMessageId,
     });
     streamState.assistantMessageId = undefined;
+  } else {
+    const aiMessage = event.data.output as AIMessage;
+    const messageId = aiMessage.id || randomUUID();
+    const messageContent = resolveMessageContent(aiMessage.content);
+
+    if (messageContent) {
+      eventStream$.sendTextMessage(messageId, messageContent);
+    }
   }
 }
 
